@@ -1,0 +1,257 @@
+"""Extract all media URLs (images, video, audio) from a web page."""
+from __future__ import annotations
+
+from urllib.parse import urljoin, urlparse
+
+import requests
+from bs4 import BeautifulSoup
+
+IMG_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".bmp", ".ico", ".avif",
+            ".tif", ".tiff", ".heic", ".heif", ".apng", ".jfif"}
+VIDEO_EXTS = {".mp4", ".webm", ".mov", ".m4v", ".ogv", ".mkv", ".flv", ".wmv", ".avi",
+              ".mpg", ".mpeg", ".3gp", ".m2v", ".mts"}
+AUDIO_EXTS = {".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac", ".opus", ".wma",
+              ".aiff", ".aif", ".mid", ".midi", ".amr", ".oga"}
+OTHER_EXTS = {".swf"}
+
+HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; Real-Eyes/1.0)"}
+
+
+def classify(url: str) -> str | None:
+    ext = "." + urlparse(url).path.rsplit(".", 1)[-1].lower() if "." in urlparse(url).path else ""
+    if ext in IMG_EXTS:
+        return "image"
+    if ext in VIDEO_EXTS:
+        return "video"
+    if ext in AUDIO_EXTS:
+        return "audio"
+    if ext in OTHER_EXTS:
+        return "other"
+    return None
+
+
+def is_wayback_noise(url: str) -> bool:
+    """True for Wayback Machine's own toolbar/player assets, not archived content."""
+    p = urlparse(url)
+    return p.netloc.endswith("archive.org") and p.path.startswith(("/_static/", "/static/"))
+
+
+def resolve_wayback(url: str, date: str | None = None) -> str | None:
+    """Return the closest Wayback snapshot URL for `url`, or None if not archived.
+
+    `date` may be YYYY-MM-DD or YYYYMMDD; omitted = newest snapshot.
+    """
+    params = {"url": url}
+    if date:
+        params["timestamp"] = date.replace("-", "")
+    r = requests.get("https://archive.org/wayback/available", params=params,
+                     headers=HEADERS, timeout=20)
+    r.raise_for_status()
+    snap = r.json().get("archived_snapshots", {}).get("closest")
+    if snap and snap.get("available"):
+        return snap["url"].replace("http://web.archive.org", "https://web.archive.org", 1)
+    return None
+
+
+def wayback_median_snapshot(url: str) -> str | None:
+    """Snapshot at the MEDIAN capture date for a page, or None if never archived."""
+    params = {"url": url, "output": "json", "fl": "timestamp",
+              "filter": "statuscode:200", "limit": "5000"}
+    r = requests.get("https://web.archive.org/cdx/search/cdx", params=params,
+                     headers=HEADERS, timeout=30)
+    r.raise_for_status()
+    rows = r.json() if r.text.strip() else []
+    stamps = sorted(row[0] for row in rows[1:] if row)
+    if not stamps:
+        return None
+    mid = stamps[len(stamps) // 2]
+    return f"https://web.archive.org/web/{mid}/{url}"
+
+
+def _mime_to_type(mime: str) -> str | None:
+    if mime.startswith("image/"):
+        return "image"
+    if mime.startswith("video/"):
+        return "video"
+    if mime.startswith("audio/"):
+        return "audio"
+    if mime in ("application/x-shockwave-flash", "application/vnd.adobe.flash.movie"):
+        return "other"
+    return None
+
+
+def cdx_fetch_rows(url: str, limit: int = 20000) -> list:
+    """Raw CDX index rows for every archived media file on a domain."""
+    parsed = urlparse(url if "://" in url else "https://" + url)
+    domain = parsed.netloc or url
+    params = {
+        "url": domain + "/*",
+        "output": "json",
+        "fl": "timestamp,original,mimetype",
+        "filter": ["statuscode:200",
+                   "mimetype:(image|video|audio)/.*|application/x-shockwave-flash"],
+        "collapse": "urlkey",
+        "limit": str(limit),
+    }
+    r = requests.get("https://web.archive.org/cdx/search/cdx", params=params,
+                     headers=HEADERS, timeout=90)
+    r.raise_for_status()
+    return r.json() if r.text.strip() else []
+
+
+def parse_cdx_row(row, seen: set) -> dict | None:
+    """One CDX row -> media item (or None if not media / already seen)."""
+    ts, original, mime = row[0], row[1], row[2]
+    mtype = _mime_to_type(mime) or classify(original)
+    if not mtype or original in seen:
+        return None
+    seen.add(original)
+    size = 0
+    if len(row) > 3:
+        try:
+            size = int(row[3])
+        except (TypeError, ValueError):
+            size = 0
+    mod = "im_" if mtype == "image" else "id_"   # id_ = untouched original bytes
+    return {
+        "url": f"https://web.archive.org/web/{ts}{mod}/{original}",
+        "type": mtype,
+        "source_tag": mime or "cdx",
+        "size": size,
+    }
+
+
+def cdx_fetch_pages(url: str, total_limit: int = 100000, page_size: int = 10000,
+                    scope: str = "domain"):
+    """Yield batches of CDX rows, paging with resumeKey up to total_limit.
+
+    scope="domain": everything on the host. scope="path": only URLs under the
+    given URL's folder — for sites living inside a big hosting domain.
+    """
+    parsed = urlparse(url if "://" in url else "https://" + url)
+    if scope == "path" and parsed.path.strip("/"):
+        domain = (parsed.netloc + parsed.path).rstrip("/")
+    else:
+        domain = parsed.netloc or url
+    resume, fetched = None, 0
+    while fetched < total_limit:
+        params = {
+            "url": domain + "/*",
+            "output": "json",
+            "fl": "timestamp,original,mimetype,length",
+            "filter": ["statuscode:200",
+                       "mimetype:(image|video|audio)/.*|application/x-shockwave-flash"],
+            "collapse": "urlkey",
+            "limit": str(min(page_size, total_limit - fetched)),
+            "showResumeKey": "true",
+        }
+        if resume:
+            params["resumeKey"] = resume
+        r = requests.get("https://web.archive.org/cdx/search/cdx", params=params,
+                         headers=HEADERS, timeout=120)
+        r.raise_for_status()
+        rows = r.json() if r.text.strip() else []
+        if rows and rows[0] and rows[0][0] == "timestamp":
+            rows = rows[1:]
+        # tail format with showResumeKey: ..., [], ["<key>"]
+        resume = None
+        while rows and rows[-1] == []:
+            rows.pop()
+        if rows and len(rows[-1]) == 1:
+            resume = rows[-1][0]
+            rows = rows[:-1]
+            while rows and rows[-1] == []:
+                rows.pop()
+        if not rows:
+            return
+        fetched += len(rows)
+        yield rows
+        if not resume:
+            return
+
+
+def cdx_site_media(url: str, limit: int = 20000) -> list[dict]:
+    """Every media URL ever archived for a whole site, via the Wayback CDX API."""
+    rows = cdx_fetch_rows(url, limit)
+    out, seen = [], set()
+    for row in rows[1:]:  # first row is the header
+        item = parse_cdx_row(row, seen)
+        if item:
+            out.append(item)
+    return out
+
+
+def _srcset_urls(srcset: str):
+    for part in srcset.split(","):
+        candidate = part.strip().split(" ")[0].strip()
+        if candidate:
+            yield candidate
+
+
+def extract_media(html: str, base_url: str) -> list[dict]:
+    """Return a list of {url, type, source_tag} dicts, deduplicated, in page order."""
+    soup = BeautifulSoup(html, "html.parser")
+    found: dict[str, dict] = {}
+
+    def add(raw: str, mtype: str | None, tag: str):
+        if not raw or raw.startswith(("data:", "javascript:", "blob:")):
+            return
+        url = urljoin(base_url, raw.strip())
+        if not url.startswith(("http://", "https://")):
+            return
+        if is_wayback_noise(url):
+            return
+        mtype = mtype or classify(url)
+        if not mtype:
+            return
+        if url not in found:
+            found[url] = {"url": url, "type": mtype, "source_tag": tag}
+
+    for img in soup.find_all("img"):
+        add(img.get("src") or img.get("data-src") or "", "image", "img")
+        if img.get("srcset"):
+            for u in _srcset_urls(img["srcset"]):
+                add(u, "image", "img[srcset]")
+
+    for tag_name, mtype in (("video", "video"), ("audio", "audio")):
+        for el in soup.find_all(tag_name):
+            add(el.get("src") or "", mtype, tag_name)
+            for source in el.find_all("source"):
+                add(source.get("src") or "", mtype, f"{tag_name}>source")
+
+    for source in soup.find_all("source"):
+        if source.get("srcset"):
+            for u in _srcset_urls(source["srcset"]):
+                add(u, None, "picture>source")
+
+    # Links pointing directly at media files
+    for a in soup.find_all("a", href=True):
+        add(a["href"], None, "a[href]")
+
+    # Open Graph / Twitter card media
+    for meta in soup.find_all("meta"):
+        prop = (meta.get("property") or meta.get("name") or "").lower()
+        if prop in ("og:image", "og:video", "og:audio", "twitter:image", "twitter:player:stream"):
+            mtype = "image" if "image" in prop else ("audio" if "audio" in prop else "video")
+            add(meta.get("content") or "", mtype, f"meta[{prop}]")
+
+    # CSS background images in inline styles
+    for el in soup.find_all(style=True):
+        style = el["style"]
+        idx = 0
+        while (pos := style.find("url(", idx)) != -1:
+            end = style.find(")", pos)
+            if end == -1:
+                break
+            raw = style[pos + 4:end].strip("'\" ")
+            add(raw, "image", "style")
+            idx = end + 1
+
+    return list(found.values())
+
+
+def fetch_page(url: str) -> tuple[str, str]:
+    """Fetch a page; returns (html, final_url after redirects)."""
+    resp = requests.get(url, headers=HEADERS, timeout=20)
+    resp.raise_for_status()
+    return resp.text, resp.url
