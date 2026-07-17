@@ -567,6 +567,17 @@ let scrapeCtl = null;
 $('stopbtn').addEventListener('click', () => { if (scrapeCtl) scrapeCtl.abort(); });
 
 function finalizeScrape(items, srcLabel) {
+  if (!items.length) {
+    $('error').textContent = mode() === 'page'
+      ? 'No media found on that page.'
+      : mode() === 'local'
+        ? 'Nothing archived under that folder. Local site expects a folder-style address ' +
+          '(host.com/user/site). For a single page — like a wiki article — use "This page" ' +
+          'with the Wayback option: its images usually live on other hosts and are found by ' +
+          'reading the page itself.'
+        : 'The archive has no media indexed for that domain.';
+    $('error').style.display = 'block';
+  }
   media = items;
   enrich(media);
   folderSel = '';
