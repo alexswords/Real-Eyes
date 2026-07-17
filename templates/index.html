@@ -84,7 +84,8 @@
   #url { flex: 1; }
   .wb-row { display: flex; gap: 16px; align-items: center; margin-bottom: 8px; font-size: 12px;
             color: #3e523a; flex-wrap: wrap; }
-  .wb-row input[type=text] { width: 250px; font-size: 12px; }
+  .wb-row input[type=text] { width: 290px; font-size: 12px; }
+  .wb-row .hint { color: #7d9370; font-size: 11px; }
   .wb-row input[type=text]:disabled { background: #eef2f5; }
   #source { word-break: break-all; }
   .error {
@@ -348,7 +349,11 @@
     <b>Source:</b>
     <label><input type="radio" name="src" value="live" checked> Live web</label>
     <label><input type="radio" name="src" value="wayback"> Wayback archive</label>
-    <input type="text" id="wbdate" placeholder="YYYY-MM-DD (page snapshots; default: median)" disabled>
+  </div>
+  <div class="wb-row" id="daterow" style="display:none">
+    <b>Snapshot date:</b>
+    <input type="text" id="wbdate" placeholder="YYYY-MM-DD — leave blank for the median capture">
+    <span class="hint">applies to single-page snapshots; folder &amp; site scrapes span all history</span>
   </div>
   <div class="wb-row">
     <b>Scope:</b>
@@ -460,9 +465,10 @@ const srcSel = () => document.querySelector('input[name=src]:checked').value;
 const scopeSel = () => document.querySelector('input[name=scope]:checked').value;
 
 function updateDateField() {
-  // a specific date only applies to single-page Wayback snapshots;
+  // a date only applies to single-page Wayback snapshots;
   // folder/site archive scrapes always cover all history
-  $('wbdate').disabled = !(srcSel() === 'wayback' && scopeSel() === 'page');
+  const on = srcSel() === 'wayback' && scopeSel() === 'page';
+  $('daterow').style.display = on ? 'flex' : 'none';
 }
 document.querySelectorAll('input[name=src], input[name=scope]').forEach(r =>
   r.addEventListener('change', updateDateField));
