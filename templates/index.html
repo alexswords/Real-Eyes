@@ -86,6 +86,10 @@
             color: #3e523a; flex-wrap: wrap; }
   .wb-row input[type=text] { width: 290px; font-size: 12px; }
   .wb-row .hint { color: #7d9370; font-size: 11px; }
+  .selrow { display: none; grid-template-columns: 62px repeat(3, 165px); align-items: center;
+            gap: 4px 8px; margin-bottom: 7px; font-size: 12px; color: #3e523a; }
+  .selrow label { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+  #srcrow { display: grid; }
   #calrow { display: none; gap: 14px; margin: 0 0 10px; }
   .cal { background: rgba(255,255,255,.55); border: 1px solid #aec19a; border-radius: 4px;
          padding: 8px; width: 240px; }
@@ -358,20 +362,20 @@
   <form id="form">
     <input type="text" id="url" placeholder="example.com — or any full URL" required>
     <span class="gocol">
-      <button type="submit" id="go" class="primary">Start Scrape</button>
+      <button type="submit" id="go" class="primary" disabled title="Choose a source, time, and scope first">Start Scrape</button>
       <button type="button" id="stopbtn">■ Stop Scraping</button>
     </span>
     <button type="button" id="home" title="Clear results and start over">Clear</button>
   </form>
-  <div class="wb-row">
+  <div class="selrow" id="srcrow">
     <b>Source:</b>
-    <label><input type="radio" name="src" value="live" checked> Live web</label>
+    <label><input type="radio" name="src" value="live"> Live web</label>
     <label><input type="radio" name="src" value="wayback"> Wayback archive</label>
     <label><input type="radio" name="src" value="both" title="Scrape the live site, then add anything the archive has that the live site no longer serves"> Both</label>
   </div>
-  <div class="wb-row">
+  <div class="selrow" id="timerow">
     <b>Time:</b>
-    <label><input type="radio" name="time" value="now" checked title="The live web as-is; archive lookups favor the newest captures"> Now</label>
+    <label><input type="radio" name="time" value="now" title="The live web as-is; archive lookups favor the newest captures"> Now</label>
     <label><input type="radio" name="time" value="range" title="Pick a date range for archive captures"> Custom</label>
     <label><input type="radio" name="time" value="all" title="The archive's full history; single pages use their median capture"> All time</label>
   </div>
@@ -379,9 +383,9 @@
     <div class="cal" id="cal-from"></div>
     <div class="cal" id="cal-to"></div>
   </div>
-  <div class="wb-row">
+  <div class="selrow" id="scoperow">
     <b>Scope:</b>
-    <label><input type="radio" name="scope" value="page" checked> This page</label>
+    <label><input type="radio" name="scope" value="page"> This page</label>
     <label><input type="radio" name="scope" value="local" title="Stays within this URL's folder — for sites hosted inside a larger domain"> Site folder</label>
     <label><input type="radio" name="scope" value="site"> Entire site</label>
   </div>
@@ -485,10 +489,10 @@ let folderSel = '';            // selected folder path prefix ('' = all)
 let extOff = new Set();        // extensions toggled off
 let selectedUrl = null;
 const $ = id => document.getElementById(id);
-const srcSel = () => document.querySelector('input[name=src]:checked').value;
-const scopeSel = () => document.querySelector('input[name=scope]:checked').value;
+const srcSel = () => document.querySelector('input[name=src]:checked')?.value || '';
+const scopeSel = () => document.querySelector('input[name=scope]:checked')?.value || '';
 
-const timeSel = () => document.querySelector('input[name=time]:checked').value;
+const timeSel = () => document.querySelector('input[name=time]:checked')?.value || '';
 
 /* custom-range calendars: year & month selects on top, day chips below */
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -517,10 +521,17 @@ function renderCal(key) {
 }
 const tsOf = c => `${c.y}${String(c.m + 1).padStart(2, '0')}${String(c.d).padStart(2, '0')}`;
 
-document.querySelectorAll('input[name=time]').forEach(r =>
-  r.addEventListener('change', () => {
-    $('calrow').style.display = timeSel() === 'range' ? 'flex' : 'none';
-  }));
+/* progressive reveal: Source -> Time (-> calendars) -> Scope */
+function updateFlow() {
+  const s = srcSel(), t = timeSel();
+  $('timerow').style.display = s ? 'grid' : 'none';
+  $('calrow').style.display = s && t === 'range' ? 'flex' : 'none';
+  $('scoperow').style.display = s && t ? 'grid' : 'none';
+  $('go').disabled = !(s && t && scopeSel());
+}
+document.querySelectorAll('input[name=src], input[name=time], input[name=scope]').forEach(r =>
+  r.addEventListener('change', updateFlow));
+updateFlow();
 $('calrow').addEventListener('change', e => {
   const key = e.target.dataset.cal, part = e.target.dataset.part;
   if (!key || !part) return;
@@ -567,6 +578,7 @@ function enrich(items) {
 
 $('form').addEventListener('submit', async e => {
   e.preventDefault();
+  if (!srcSel() || !timeSel() || !scopeSel()) return;
   $('error').style.display = 'none';
   $('toolbar').style.display = 'none';
   $('main').style.display = 'none';
