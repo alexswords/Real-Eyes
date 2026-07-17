@@ -60,16 +60,31 @@ def scrape():
         url = "https://" + url
     source = data.get("source", "live")          # live | wayback | both
     scope = data.get("scope", "page")            # page | local | site
-    date = data.get("date") or None
+    tkind = data.get("time", "now")              # now | range | all
+    tfrom = re.sub(r"\D", "", str(data.get("tfrom") or ""))[:8] or None
+    tto = re.sub(r"\D", "", str(data.get("tto") or ""))[:8] or None
+    if tkind == "now":
+        # archive side of "now" = roughly the last year of captures
+        cdx_from, cdx_to = time.strftime("%Y%m%d", time.localtime(time.time() - 365 * 86400)), None
+    elif tkind == "range":
+        cdx_from, cdx_to = tfrom, tto
+    else:
+        cdx_from = cdx_to = None
 
     def line(obj):
         return json.dumps(obj) + "\n"
 
     def resolve_snapshot(target):
-        if date:
-            return resolve_wayback(target, date)
+        if tkind == "now":
+            return resolve_wayback(target)               # newest capture
+        if tkind == "range" and (tfrom or tto):
+            try:
+                snap = wayback_median_snapshot(target, tfrom, tto)
+            except requests.RequestException:
+                snap = None
+            return snap or resolve_wayback(target, tto or tfrom)
         try:
-            snap = wayback_median_snapshot(target)
+            snap = wayback_median_snapshot(target)        # all time -> median
         except requests.RequestException:
             snap = None
         return snap or resolve_wayback(target)
@@ -103,7 +118,8 @@ def scrape():
                         return
                 yield line({"status": "Querying the Wayback Machine index"})
                 batch, seen_cdx = [], set()
-                for rows in cdx_fetch_pages(url, scope=cdx_scope):
+                for rows in cdx_fetch_pages(url, scope=cdx_scope,
+                                            ts_from=cdx_from, ts_to=cdx_to):
                     for row in rows:
                         item = parse_cdx_row(row, seen_cdx)
                         if not item:
@@ -120,8 +136,10 @@ def scrape():
                 if batch:
                     count += len(batch)
                     yield line({"items": batch, "progress": count})
-                suffix = ("live + all archived history" if source == "both"
-                          else "all archived history")
+                hist = ("archive " + (tfrom or "…") + "–" + (tto or "…") if tkind == "range"
+                        else "recent archive captures" if tkind == "now"
+                        else "all archived history")
+                suffix = ("live + " + hist) if source == "both" else hist
                 yield line({"done": {"url": f"{url} ({label}, {suffix})", "count": count}})
                 return
 

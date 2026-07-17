@@ -86,6 +86,19 @@
             color: #3e523a; flex-wrap: wrap; }
   .wb-row input[type=text] { width: 290px; font-size: 12px; }
   .wb-row .hint { color: #7d9370; font-size: 11px; }
+  #calrow { display: none; gap: 14px; margin: 0 0 10px; }
+  .cal { background: rgba(255,255,255,.55); border: 1px solid #aec19a; border-radius: 4px;
+         padding: 8px; width: 240px; }
+  .calhead { display: flex; gap: 6px; align-items: center; font-size: 12px; font-weight: 600;
+             margin-bottom: 6px; color: #33482d; }
+  .calhead select { padding: 2px 4px; font-size: 12px; }
+  .daygrid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
+  .daychip { text-align: center; font-size: 11px; padding: 3px 0; border: 1px solid #c2d0af;
+             border-radius: 3px; background: rgba(255,255,255,.7); cursor: pointer;
+             user-select: none; }
+  .daychip:hover { border-color: #6d8f5a; background: #eef7e6; }
+  .daychip.sel { background: linear-gradient(180deg, #6f9e55, #557a3f); color: #fff;
+                 border-color: #44622f; font-weight: 700; }
   .wb-row input[type=text]:disabled { background: #eef2f5; }
   #source { word-break: break-all; }
   .error {
@@ -356,10 +369,15 @@
     <label><input type="radio" name="src" value="wayback"> Wayback archive</label>
     <label><input type="radio" name="src" value="both" title="Scrape the live site, then add anything the archive has that the live site no longer serves"> Both</label>
   </div>
-  <div class="wb-row" id="daterow" style="display:none">
-    <b>Snapshot date:</b>
-    <input type="text" id="wbdate" placeholder="YYYY-MM-DD — leave blank for the median capture">
-    <span class="hint">applies to single-page snapshots; folder &amp; site scrapes span all history</span>
+  <div class="wb-row">
+    <b>Time:</b>
+    <label><input type="radio" name="time" value="now" checked title="The live web as-is; archive lookups favor the newest captures"> Now</label>
+    <label><input type="radio" name="time" value="range" title="Pick a date range for archive captures"> Custom</label>
+    <label><input type="radio" name="time" value="all" title="The archive's full history; single pages use their median capture"> All time</label>
+  </div>
+  <div id="calrow">
+    <div class="cal" id="cal-from"></div>
+    <div class="cal" id="cal-to"></div>
   </div>
   <div class="wb-row">
     <b>Scope:</b>
@@ -470,14 +488,55 @@ const $ = id => document.getElementById(id);
 const srcSel = () => document.querySelector('input[name=src]:checked').value;
 const scopeSel = () => document.querySelector('input[name=scope]:checked').value;
 
-function updateDateField() {
-  // a date only applies to single-page Wayback snapshots;
-  // folder/site archive scrapes always cover all history
-  const on = srcSel() === 'wayback' && scopeSel() === 'page';
-  $('daterow').style.display = on ? 'flex' : 'none';
+const timeSel = () => document.querySelector('input[name=time]:checked').value;
+
+/* custom-range calendars: year & month selects on top, day chips below */
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const _now = new Date();
+const cals = {
+  from: { y: 2000, m: 0, d: 1 },
+  to:   { y: _now.getFullYear(), m: _now.getMonth(), d: _now.getDate() }
+};
+function renderCal(key) {
+  const c = cals[key];
+  const curY = new Date().getFullYear();
+  let years = '';
+  for (let y = 1996; y <= curY; y++)
+    years += `<option value="${y}" ${y === c.y ? 'selected' : ''}>${y}</option>`;
+  const months = MONTHS.map((mn, i) =>
+    `<option value="${i}" ${i === c.m ? 'selected' : ''}>${mn}</option>`).join('');
+  const days = new Date(c.y, c.m + 1, 0).getDate();
+  let chips = '';
+  for (let d = 1; d <= days; d++)
+    chips += `<span class="daychip ${d === c.d ? 'sel' : ''}" data-cal="${key}" data-d="${d}">${d}</span>`;
+  document.getElementById('cal-' + key).innerHTML =
+    `<div class="calhead">${key === 'from' ? 'From' : 'To'}
+       <select data-cal="${key}" data-part="y">${years}</select>
+       <select data-cal="${key}" data-part="m">${months}</select></div>
+     <div class="daygrid">${chips}</div>`;
 }
-document.querySelectorAll('input[name=src], input[name=scope]').forEach(r =>
-  r.addEventListener('change', updateDateField));
+const tsOf = c => `${c.y}${String(c.m + 1).padStart(2, '0')}${String(c.d).padStart(2, '0')}`;
+
+document.querySelectorAll('input[name=time]').forEach(r =>
+  r.addEventListener('change', () => {
+    $('calrow').style.display = timeSel() === 'range' ? 'flex' : 'none';
+  }));
+$('calrow').addEventListener('change', e => {
+  const key = e.target.dataset.cal, part = e.target.dataset.part;
+  if (!key || !part) return;
+  cals[key][part] = parseInt(e.target.value, 10);
+  const max = new Date(cals[key].y, cals[key].m + 1, 0).getDate();
+  if (cals[key].d > max) cals[key].d = max;
+  renderCal(key);
+});
+$('calrow').addEventListener('click', e => {
+  const d = e.target.dataset.d;
+  if (!d) return;
+  cals[e.target.dataset.cal].d = parseInt(d, 10);
+  renderCal(e.target.dataset.cal);
+});
+renderCal('from');
+renderCal('to');
 
 // Wayback playback URL -> original URL for folder structure
 function originalUrl(u) {
@@ -527,7 +586,9 @@ $('form').addEventListener('submit', async e => {
         url: $('url').value,
         source: srcSel(),
         scope: scopeSel(),
-        date: $('wbdate').value.trim()
+        time: timeSel(),
+        tfrom: tsOf(cals.from),
+        tto: tsOf(cals.to)
       })
     });
     if (!r.ok) {

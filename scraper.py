@@ -56,10 +56,15 @@ def resolve_wayback(url: str, date: str | None = None) -> str | None:
     return None
 
 
-def wayback_median_snapshot(url: str) -> str | None:
-    """Snapshot at the MEDIAN capture date for a page, or None if never archived."""
+def wayback_median_snapshot(url: str, ts_from: str | None = None,
+                            ts_to: str | None = None) -> str | None:
+    """Snapshot at the MEDIAN capture date for a page (optionally within a range)."""
     params = {"url": url, "output": "json", "fl": "timestamp",
               "filter": "statuscode:200", "limit": "5000"}
+    if ts_from:
+        params["from"] = ts_from
+    if ts_to:
+        params["to"] = ts_to
     r = requests.get("https://web.archive.org/cdx/search/cdx", params=params,
                      headers=HEADERS, timeout=30)
     r.raise_for_status()
@@ -188,7 +193,8 @@ def parse_cdx_row(row, seen: set) -> dict | None:
 
 
 def cdx_fetch_pages(url: str, total_limit: int = 100000, page_size: int = 10000,
-                    scope: str = "domain"):
+                    scope: str = "domain", ts_from: str | None = None,
+                    ts_to: str | None = None):
     """Yield batches of CDX rows, paging with resumeKey up to total_limit.
 
     scope="domain": everything on the host. scope="path": only URLs under the
@@ -211,6 +217,10 @@ def cdx_fetch_pages(url: str, total_limit: int = 100000, page_size: int = 10000,
             "limit": str(min(page_size, total_limit - fetched)),
             "showResumeKey": "true",
         }
+        if ts_from:
+            params["from"] = ts_from
+        if ts_to:
+            params["to"] = ts_to
         if resume:
             params["resumeKey"] = resume
         r = requests.get("https://web.archive.org/cdx/search/cdx", params=params,
