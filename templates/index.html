@@ -348,13 +348,13 @@
       <button type="submit" id="go" class="primary">Start Scrape</button>
       <button type="button" id="stopbtn">■ Stop Scraping</button>
     </span>
-    <button type="button" id="home" title="Start over">Home</button>
+    <button type="button" id="home" title="Clear results and start over">Clear</button>
   </form>
   <div class="wb-row">
     <b>Source:</b>
     <label><input type="radio" name="src" value="live" checked> Live web</label>
     <label><input type="radio" name="src" value="wayback"> Wayback archive</label>
-    <label><input type="radio" name="src" value="both" title="Scrape the live site, then add anything the archive has that the live site no longer serves"> Both — live + lost archived files</label>
+    <label><input type="radio" name="src" value="both" title="Scrape the live site, then add anything the archive has that the live site no longer serves"> Both</label>
   </div>
   <div class="wb-row" id="daterow" style="display:none">
     <b>Snapshot date:</b>
@@ -514,7 +514,7 @@ $('form').addEventListener('submit', async e => {
   $('grid').innerHTML = '';
   $('spinner').style.display = 'block';
   $('busy').style.display = 'block';
-  $('go').disabled = true;
+  $('go').style.display = 'none';
   $('spinner').textContent = 'Scraping';
   $('stopbtn').style.display = 'block';
   scrapeCtl = new AbortController();
@@ -570,7 +570,7 @@ $('form').addEventListener('submit', async e => {
     $('spinner').style.display = 'none';
     $('busy').style.display = 'none';
     $('stopbtn').style.display = 'none';
-    $('go').disabled = false;
+    $('go').style.display = '';
     scrapeCtl = null;
   }
 });
