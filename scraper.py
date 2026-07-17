@@ -77,11 +77,12 @@ def wayback_median_snapshot(url: str, ts_from: str | None = None,
 
 
 def page_snapshots(url: str, ts_from: str | None = None, ts_to: str | None = None,
-                   max_snaps: int = 12) -> list[str]:
-    """Sampled playback URLs across a page's capture history (monthly-collapsed,
-    then evenly thinned to max_snaps, keeping the first and last captures)."""
+                   max_snaps: int = 12, deep: bool = False) -> list[str]:
+    """Playback URLs across a page's capture history. Normally monthly-collapsed and
+    thinned to max_snaps; deep=True keeps every daily capture (capped at 500)."""
+    collapse = "timestamp:8" if deep else "timestamp:6"
     params = {"url": url, "output": "json", "fl": "timestamp",
-              "filter": "statuscode:200", "collapse": "timestamp:6", "limit": "2000"}
+              "filter": "statuscode:200", "collapse": collapse, "limit": "2000"}
     if ts_from:
         params["from"] = ts_from
     if ts_to:
@@ -93,9 +94,10 @@ def page_snapshots(url: str, ts_from: str | None = None, ts_to: str | None = Non
     stamps = [row[0] for row in rows[1:] if row]
     if not stamps:
         return []
-    if len(stamps) > max_snaps:
-        step = (len(stamps) - 1) / (max_snaps - 1)
-        stamps = [stamps[round(i * step)] for i in range(max_snaps)]
+    cap = 500 if deep else max_snaps
+    if len(stamps) > cap:
+        step = (len(stamps) - 1) / (cap - 1)
+        stamps = [stamps[round(i * step)] for i in range(cap)]
     return [f"https://web.archive.org/web/{ts}/{url}" for ts in stamps]
 
 
@@ -389,3 +391,23 @@ def fetch_page(url: str) -> tuple[str, str]:
     resp = requests.get(url, headers=HEADERS, timeout=20)
     resp.raise_for_status()
     return resp.text, resp.url
+
+
+def is_animated_gif(url: str) -> bool | None:
+    """True/False if `url` is an animated GIF; None if undetermined. Reads only
+    enough bytes to count image-separator (0x2C) blocks."""
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=20, stream=True)
+        r.raise_for_status()
+        buf = b""
+        for chunk in r.iter_content(65536):
+            buf += chunk
+            if buf[:6] not in (b"GIF87a", b"GIF89a"):
+                return None
+            if buf.count(b"\x2c") >= 2:      # a second frame -> animated
+                return True
+            if len(buf) > 2_000_000:
+                break
+        return False
+    except requests.RequestException:
+        return None

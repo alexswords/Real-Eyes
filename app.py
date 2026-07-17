@@ -20,8 +20,8 @@ from flask import (Flask, Response, jsonify, render_template, request,
                    send_file, send_from_directory)
 
 from scraper import (HEADERS, cdx_fetch_pages, crawl_pages, extract_media,
-                     fetch_page, norm_url, page_snapshots, parse_cdx_row,
-                     resolve_wayback, wayback_median_snapshot)
+                     fetch_page, is_animated_gif, norm_url, page_snapshots,
+                     parse_cdx_row, resolve_wayback, wayback_median_snapshot)
 
 app = Flask(__name__)
 
@@ -63,6 +63,7 @@ def scrape():
     tkind = data.get("time", "now")              # now | range | all
     tfrom = re.sub(r"\D", "", str(data.get("tfrom") or ""))[:8] or None
     tto = re.sub(r"\D", "", str(data.get("tto") or ""))[:8] or None
+    deep = bool(data.get("deep"))
     if tkind == "now":
         # archive side of "now" = roughly the last year of captures
         cdx_from, cdx_to = time.strftime("%Y%m%d", time.localtime(time.time() - 365 * 86400)), None
@@ -177,7 +178,7 @@ def scrape():
             else:
                 yield line({"status": "Listing the page's snapshots"})
                 try:
-                    targets = page_snapshots(url, cdx_from, cdx_to)
+                    targets = page_snapshots(url, cdx_from, cdx_to, deep=deep)
                 except requests.RequestException:
                     targets = []
                 if not targets:
@@ -218,7 +219,7 @@ def scrape():
                 seen_cdx = set()
                 try:
                     for kind, payload in cdx_fetch_pages(url, scope="path",
-                                                         total_limit=20000,
+                                                         total_limit=100000,
                                                          ts_from=cdx_from, ts_to=cdx_to):
                         if kind == "status":
                             yield line({"status": payload})
@@ -305,6 +306,15 @@ def download_one():
         r.iter_content(65536),
         mimetype=r.headers.get("Content-Type", "application/octet-stream"),
         headers={"Content-Disposition": 'attachment; filename="%s"' % name})
+
+
+@app.get("/api/animated")
+def animated():
+    url = request.args.get("url", "")
+    if not url.startswith(("http://", "https://")):
+        return jsonify({"error": "Bad URL"}), 400
+    res = is_animated_gif(url)
+    return jsonify({"animated": res})
 
 
 @app.get("/api/raw")

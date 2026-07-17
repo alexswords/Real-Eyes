@@ -81,6 +81,7 @@
   form { display: flex; gap: 8px; margin-bottom: 10px; align-items: flex-start; }
   .gocol { display: flex; flex-direction: column; gap: 6px; }
   .gocol button { width: 100%; }
+  #deeprow { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #4c6244; white-space: nowrap; }
   #url { flex: 1; }
   .wb-row { display: flex; gap: 16px; align-items: center; margin-bottom: 8px; font-size: 12px;
             color: #3e523a; flex-wrap: wrap; }
@@ -168,6 +169,8 @@
   }
   .chipactions { display: flex; gap: 6px; }
   .chipactions button { padding: 3px 10px; font-size: 11px; }
+  .subsw { grid-column: 1 / -1; margin-left: 22px; }
+  .subsw .lbl { font-size: 11px; color: #557a3f; }
   .switch { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; font-size: 12px;
             user-select: none; }
   .switch input { display: none; }
@@ -364,6 +367,7 @@
     <span class="gocol">
       <button type="submit" id="go" class="primary" disabled title="Choose a source, time, and scope first">Start Scrape</button>
       <button type="button" id="stopbtn">■ Stop Scraping</button>
+      <label id="deeprow" style="display:none"><input type="checkbox" id="deep"> Deep — read every capture (slow)</label>
     </span>
     <button type="button" id="home" title="Clear results and start over">Clear</button>
   </form>
@@ -479,6 +483,7 @@ fetch('/api/ping', { method: 'POST' }).catch(() => {});
 let enlargeMult = 1;
 let picked = new Set(), lastPickIdx = -1;
 let fQ = '', fYFrom = 0, fYTo = 0, fMinKB = 0;
+let agifsOnly = false;
 const NEEDS_CONVERT = new Set(['flv', 'wmv', 'avi', 'mpg', 'mpeg', '3gp', 'm2v', 'mts',
                                'rm', 'rmvb', 'asf', 'wma', 'ra', 'amr', 'aif', 'aiff']);
 const convertUrl = m => '/api/transcode?v=2&url=' + encodeURIComponent(m.url);
@@ -527,6 +532,9 @@ function updateFlow() {
   $('timerow').style.display = s ? 'grid' : 'none';
   $('calrow').style.display = s && t === 'range' ? 'flex' : 'none';
   $('scoperow').style.display = s && t ? 'grid' : 'none';
+  const deepOK = (s === 'wayback' || s === 'both') && scopeSel() === 'page' && (t === 'range' || t === 'all');
+  $('deeprow').style.display = deepOK ? 'flex' : 'none';
+  if (!deepOK) $('deep').checked = false;
   $('go').disabled = !(s && t && scopeSel());
 }
 document.querySelectorAll('input[name=src], input[name=time], input[name=scope]').forEach(r =>
@@ -572,7 +580,8 @@ function enrich(items) {
     m.ext = dotIdx > 0 ? file.slice(dotIdx + 1).toLowerCase().split('?')[0] : '?';
     m.size = m.size || 0;
     const ts = m.url.match(/web\.archive\.org\/web\/(\d{4,14})/);
-    m.ts = ts ? parseInt(ts[1].padEnd(14, '0'), 10) : 0;
+    m.ts = ts ? parseInt(ts[1].padEnd(14, '0'), 10)
+              : parseInt(new Date().toISOString().slice(0,19).replace(/\\D/g,''), 10); // live = now
   }
 }
 
@@ -601,6 +610,7 @@ $('form').addEventListener('submit', async e => {
         source: req.source,
         scope: req.scope,
         time: req.time,
+        deep: $('deep').checked,
         tfrom: tsOf(cals.from) <= tsOf(cals.to) ? tsOf(cals.from) : tsOf(cals.to),
         tto: tsOf(cals.from) <= tsOf(cals.to) ? tsOf(cals.to) : tsOf(cals.from)
       })
@@ -754,7 +764,8 @@ function visible() {
         && (!fQ || m.name.toLowerCase().includes(fQ) || m.url.toLowerCase().includes(fQ))
         && (!fYFrom || !m.ts || m.ts >= fYFrom * 1e10)
         && (!fYTo || !m.ts || m.ts < (fYTo + 1) * 1e10)
-        && (!fMinKB || !m.size || m.size >= fMinKB * 1024))
+        && (!fMinKB || !m.size || m.size >= fMinKB * 1024)
+        && (!agifsOnly || m.ext !== 'gif' || m.animated === true))
       .sort(sorters[$('sortby').value] || sorters.ext);
   return visCache;
 }
@@ -802,21 +813,50 @@ $('tree').addEventListener('click', e => {
 function renderChips() {
   const counts = {};
   media.filter(inFolder).forEach(m => counts[m.ext] = (counts[m.ext] || 0) + 1);
-  $('chips').innerHTML = Object.keys(counts).sort().map(ext =>
-    `<label class="switch">
+  $('chips').innerHTML = Object.keys(counts).sort().map(ext => {
+    const sw = `<label class="switch">
        <input type="checkbox" data-ext="${ext}" ${extOff.has(ext) ? '' : 'checked'}>
        <span class="knob"></span>
        <span class="lbl">${ext} (${counts[ext]})</span>
-     </label>`
-  ).join('');
+     </label>`;
+    if (ext === 'gif' && !extOff.has('gif'))
+      return sw + `<label class="switch subsw" title="Show only animated GIFs (probes files on demand)">
+         <input type="checkbox" id="agifs" ${agifsOnly ? 'checked' : ''}>
+         <span class="knob"></span><span class="lbl">animated only</span></label>`;
+    return sw;
+  }).join('');
 }
 
-$('chips').addEventListener('change', e => {
+$('chips').addEventListener('change', async e => {
+  if (e.target.id === 'agifs') {
+    agifsOnly = e.target.checked;
+    if (agifsOnly) await probeGifs();
+    render();
+    return;
+  }
   const ext = e.target.dataset.ext;
   if (!ext) return;
   e.target.checked ? extOff.delete(ext) : extOff.add(ext);
   render();
 });
+
+async function probeGifs() {
+  const pending = media.filter(m => m.ext === 'gif' && m.animated === undefined && inFolder(m));
+  if (!pending.length) return;
+  $('busy').style.display = 'block';
+  let i = 0;
+  async function worker() {
+    while (i < pending.length) {
+      const m = pending[i++];
+      try {
+        const r = await fetch('/api/animated?url=' + encodeURIComponent(m.url));
+        m.animated = (await r.json()).animated === true;
+      } catch (e) { m.animated = false; }
+    }
+  }
+  await Promise.all([worker(), worker(), worker(), worker()]);  // 4 parallel probes
+  $('busy').style.display = 'none';
+}
 
 $('extall').addEventListener('click', () => {
   extOff.clear();
