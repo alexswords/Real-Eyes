@@ -19,8 +19,9 @@ import requests
 from flask import (Flask, Response, jsonify, render_template, request,
                    send_file, send_from_directory)
 
-from scraper import (HEADERS, cdx_fetch_pages, extract_media, fetch_page,
-                     parse_cdx_row, resolve_wayback, wayback_median_snapshot)
+from scraper import (HEADERS, cdx_fetch_pages, crawl_pages, extract_media,
+                     fetch_page, parse_cdx_row, resolve_wayback,
+                     wayback_median_snapshot)
 
 app = Flask(__name__)
 
@@ -57,8 +58,8 @@ def scrape():
         return jsonify({"error": "No URL provided"}), 400
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
-    mode = data.get("mode", "page")
-    wayback = bool(data.get("wayback"))
+    source = data.get("source", "live")          # live | wayback
+    scope = data.get("scope", "page")            # page | local | site
     date = data.get("date") or None
 
     def line(obj):
@@ -66,28 +67,45 @@ def scrape():
 
     def generate():
         try:
-            if mode in ("site", "local"):
-                yield line({"status": "Querying the Wayback Machine index"})
-                count, batch, seen = 0, [], set()
-                scope = "path" if mode == "local" else "domain"
-                for rows in cdx_fetch_pages(url, scope=scope):
-                    for row in rows:
-                        item = parse_cdx_row(row, seen)
-                        if item:
-                            batch.append(item)
-                            if len(batch) >= 250:
-                                count += len(batch)
-                                yield line({"items": batch, "progress": count})
-                                batch = []
-                if batch:
-                    count += len(batch)
-                    yield line({"items": batch, "progress": count})
-                label = "local site" if mode == "local" else "entire site"
-                yield line({"done": {"url": f"{url} ({label}, all archived history)",
+            if scope in ("site", "local"):
+                cdx_scope = "path" if scope == "local" else "domain"
+                label = "site folder" if scope == "local" else "entire site"
+                if source == "wayback":
+                    yield line({"status": "Querying the Wayback Machine index"})
+                    count, batch, seen = 0, [], set()
+                    for rows in cdx_fetch_pages(url, scope=cdx_scope):
+                        for row in rows:
+                            item = parse_cdx_row(row, seen)
+                            if item:
+                                batch.append(item)
+                                if len(batch) >= 250:
+                                    count += len(batch)
+                                    yield line({"items": batch, "progress": count})
+                                    batch = []
+                    if batch:
+                        count += len(batch)
+                        yield line({"items": batch, "progress": count})
+                    yield line({"done": {"url": f"{url} ({label}, all archived history)",
+                                         "count": count}})
+                    return
+                # live crawl: BFS the site's pages, extracting media from each
+                yield line({"status": "Crawling the live site"})
+                count, seen, pages = 0, set(), 0
+                for page_url, html in crawl_pages(url, scope=cdx_scope):
+                    pages += 1
+                    fresh = [it for it in extract_media(html, page_url)
+                             if it["url"] not in seen]
+                    for it in fresh:
+                        seen.add(it["url"])
+                    count += len(fresh)
+                    if fresh:
+                        yield line({"items": fresh})
+                    yield line({"status": f"Crawling — {pages} pages, {count} files found"})
+                yield line({"done": {"url": f"{url} ({label}, live crawl, {pages} pages)",
                                      "count": count}})
                 return
             target = url
-            if wayback and "web.archive.org" not in target:
+            if source == "wayback" and "web.archive.org" not in target:
                 yield line({"status": "Resolving Wayback snapshot"})
                 snap = None
                 if date:

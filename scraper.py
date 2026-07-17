@@ -1,6 +1,8 @@
 """Extract all media URLs (images, video, audio) from a web page."""
 from __future__ import annotations
 
+import time
+from collections import deque
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -80,6 +82,50 @@ def _mime_to_type(mime: str) -> str | None:
     return None
 
 
+def folder_of(path: str) -> str:
+    """Folder containing `path`: files map to their parent, folders to themselves."""
+    if not path:
+        return "/"
+    if path.endswith("/"):
+        return path
+    last = path.rsplit("/", 1)[-1]
+    if "." in last:                      # looks like a file
+        return path.rsplit("/", 1)[0] + "/"
+    return path + "/"
+
+
+def crawl_pages(start_url: str, scope: str = "domain", max_pages: int = 120):
+    """BFS over same-scope HTML pages of a LIVE site, yielding (url, html)."""
+    start = start_url if "://" in start_url else "https://" + start_url
+    parsed = urlparse(start)
+    netloc = parsed.netloc
+    prefix = folder_of(parsed.path) if scope == "path" else "/"
+    seen, queue, pages = {start}, deque([start]), 0
+    while queue and pages < max_pages:
+        u = queue.popleft()
+        try:
+            r = requests.get(u, headers=HEADERS, timeout=15)
+        except requests.RequestException:
+            continue
+        if "html" not in r.headers.get("Content-Type", ""):
+            continue
+        pages += 1
+        yield r.url, r.text
+        for a in BeautifulSoup(r.text, "html.parser").find_all("a", href=True):
+            v = urljoin(r.url, a["href"].split("#")[0].strip())
+            pv = urlparse(v)
+            if pv.scheme not in ("http", "https") or pv.netloc != netloc:
+                continue
+            if not pv.path.startswith(prefix):
+                continue
+            if classify(v):              # media links are collected, not crawled
+                continue
+            if v not in seen and len(seen) < max_pages * 6:
+                seen.add(v)
+                queue.append(v)
+        time.sleep(0.1)                  # politeness
+
+
 def cdx_fetch_rows(url: str, limit: int = 20000) -> list:
     """Raw CDX index rows for every archived media file on a domain."""
     parsed = urlparse(url if "://" in url else "https://" + url)
@@ -130,7 +176,7 @@ def cdx_fetch_pages(url: str, total_limit: int = 100000, page_size: int = 10000,
     """
     parsed = urlparse(url if "://" in url else "https://" + url)
     if scope == "path" and parsed.path.strip("/"):
-        domain = (parsed.netloc + parsed.path).rstrip("/")
+        domain = (parsed.netloc + folder_of(parsed.path)).rstrip("/")
     else:
         domain = parsed.netloc or url
     resume, fetched = None, 0

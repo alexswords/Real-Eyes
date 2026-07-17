@@ -345,13 +345,16 @@
     <button type="button" id="home" title="Start over">Home</button>
   </form>
   <div class="wb-row">
-    <label><input type="radio" name="mode" value="page" checked> This page</label>
-    <label><input type="radio" name="mode" value="local" title="For sites hosted inside a big domain — only scrapes under this URL's folder"> Local site — stay within this URL's folder (Wayback)</label>
-    <label><input type="radio" name="mode" value="site"> Entire site — all archived history (Wayback)</label>
+    <b>Source:</b>
+    <label><input type="radio" name="src" value="live" checked> Live web</label>
+    <label><input type="radio" name="src" value="wayback"> Wayback archive</label>
+    <input type="text" id="wbdate" placeholder="YYYY-MM-DD (page snapshots; default: median)" disabled>
   </div>
-  <div class="wb-row" id="wbrow">
-    <label><input type="checkbox" id="wayback"> Use Wayback Machine snapshot</label>
-    <input type="text" id="wbdate" placeholder="YYYY-MM-DD (optional, default: median date)" disabled>
+  <div class="wb-row">
+    <b>Scope:</b>
+    <label><input type="radio" name="scope" value="page" checked> This page</label>
+    <label><input type="radio" name="scope" value="local" title="Stays within this URL's folder — for sites hosted inside a larger domain"> Site folder</label>
+    <label><input type="radio" name="scope" value="site"> Entire site</label>
   </div>
   <p class="sub" id="source" style="display:none"></p>
   <div class="error" id="error"></div>
@@ -453,19 +456,16 @@ let folderSel = '';            // selected folder path prefix ('' = all)
 let extOff = new Set();        // extensions toggled off
 let selectedUrl = null;
 const $ = id => document.getElementById(id);
-const mode = () => document.querySelector('input[name=mode]:checked').value;
+const srcSel = () => document.querySelector('input[name=src]:checked').value;
+const scopeSel = () => document.querySelector('input[name=scope]:checked').value;
 
-document.querySelectorAll('input[name=mode]').forEach(r =>
-  r.addEventListener('change', () => {
-    const site = mode() !== 'page';
-    $('wayback').disabled = site;
-    $('wbdate').disabled = site || !$('wayback').checked;
-    $('wbrow').style.opacity = site ? 0.4 : 1;
-  })
-);
-$('wayback').addEventListener('change', () => {
-  $('wbdate').disabled = !$('wayback').checked;
-});
+function updateDateField() {
+  // a specific date only applies to single-page Wayback snapshots;
+  // folder/site archive scrapes always cover all history
+  $('wbdate').disabled = !(srcSel() === 'wayback' && scopeSel() === 'page');
+}
+document.querySelectorAll('input[name=src], input[name=scope]').forEach(r =>
+  r.addEventListener('change', updateDateField));
 
 // Wayback playback URL -> original URL for folder structure
 function originalUrl(u) {
@@ -513,8 +513,8 @@ $('form').addEventListener('submit', async e => {
       signal: scrapeCtl.signal,
       body: JSON.stringify({
         url: $('url').value,
-        mode: mode(),
-        wayback: $('wayback').checked,
+        source: srcSel(),
+        scope: scopeSel(),
         date: $('wbdate').value.trim()
       })
     });
@@ -568,14 +568,16 @@ $('stopbtn').addEventListener('click', () => { if (scrapeCtl) scrapeCtl.abort();
 
 function finalizeScrape(items, srcLabel) {
   if (!items.length) {
-    $('error').textContent = mode() === 'page'
+    const sc = scopeSel();
+    $('error').textContent = sc === 'page'
       ? 'No media found on that page.'
-      : mode() === 'local'
-        ? 'Nothing archived under that folder. Local site expects a folder-style address ' +
-          '(host.com/user/site). For a single page — like a wiki article — use "This page" ' +
-          'with the Wayback option: its images usually live on other hosts and are found by ' +
-          'reading the page itself.'
-        : 'The archive has no media indexed for that domain.';
+      : sc === 'local'
+        ? 'Nothing found under that folder. Site folder scope works on folder-style addresses ' +
+          '(host.com/user/site). For a single article-style page, use "This page" — its media ' +
+          'often lives on other hosts and is found by reading the page itself.'
+        : (srcSel() === 'wayback'
+          ? 'The archive has no media indexed for that domain.'
+          : 'The crawl found no media on that site.');
     $('error').style.display = 'block';
   }
   media = items;
