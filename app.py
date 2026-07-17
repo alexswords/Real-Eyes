@@ -118,9 +118,12 @@ def scrape():
                         return
                 yield line({"status": "Querying the Wayback Machine index"})
                 batch, seen_cdx = [], set()
-                for rows in cdx_fetch_pages(url, scope=cdx_scope,
-                                            ts_from=cdx_from, ts_to=cdx_to):
-                    for row in rows:
+                for kind, payload in cdx_fetch_pages(url, scope=cdx_scope,
+                                                     ts_from=cdx_from, ts_to=cdx_to):
+                    if kind == "status":
+                        yield line({"status": payload})
+                        continue
+                    for row in payload:
                         item = parse_cdx_row(row, seen_cdx)
                         if not item:
                             continue

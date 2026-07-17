@@ -224,25 +224,39 @@ def cdx_fetch_pages(url: str, total_limit: int = 100000, page_size: int = 10000,
         if resume:
             params["resumeKey"] = resume
         r, last_err = None, None
-        for attempt in range(3):
+        for attempt in range(5):
             try:
                 r = requests.get("https://web.archive.org/cdx/search/cdx", params=params,
                                  headers=HEADERS, timeout=120)
-                if r.status_code in (429, 502, 503, 504):
+                if r.status_code == 429:
+                    wait = min(int(r.headers.get("Retry-After") or 0) or 15 * (attempt + 1), 90)
+                    last_err = "HTTP 429"
+                    r = None
+                    yield ("status", f"Archive is rate-limiting — waiting {wait}s "
+                                     f"(attempt {attempt + 1}/5)")
+                    time.sleep(wait)
+                    continue
+                if r.status_code in (502, 503, 504):
                     last_err = f"HTTP {r.status_code}"
                     r = None
                     # huge domains: server-side dedup is what times out — do it locally instead
-                    if attempt == 0 and "collapse" in params:
+                    if "collapse" in params:
                         params.pop("collapse")
-                    time.sleep(4 * (attempt + 1))
+                    yield ("status", f"Archive index strained ({last_err}) — retrying")
+                    time.sleep(5 * (attempt + 1))
                     continue
                 r.raise_for_status()
                 break
             except requests.RequestException as e:
                 last_err = str(e)
                 r = None
-                time.sleep(3)
+                time.sleep(4)
         if r is None:
+            if "429" in (last_err or ""):
+                raise requests.RequestException(
+                    "The archive is rate-limiting this connection (HTTP 429). It clears on its "
+                    "own — wait a couple of minutes before scraping again. Repeated large scans "
+                    "trip it fastest; prefer Site folder scope or a narrow time range.")
             raise requests.RequestException(
                 f"The archive's index timed out for this domain ({last_err}). "
                 "Domains this large may not be fully scannable — try Site folder scope "
@@ -262,7 +276,7 @@ def cdx_fetch_pages(url: str, total_limit: int = 100000, page_size: int = 10000,
         if not rows:
             return
         fetched += len(rows)
-        yield rows
+        yield ("rows", rows)
         if not resume:
             return
 
