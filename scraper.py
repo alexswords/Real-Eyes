@@ -223,9 +223,30 @@ def cdx_fetch_pages(url: str, total_limit: int = 100000, page_size: int = 10000,
             params["to"] = ts_to
         if resume:
             params["resumeKey"] = resume
-        r = requests.get("https://web.archive.org/cdx/search/cdx", params=params,
-                         headers=HEADERS, timeout=120)
-        r.raise_for_status()
+        r, last_err = None, None
+        for attempt in range(3):
+            try:
+                r = requests.get("https://web.archive.org/cdx/search/cdx", params=params,
+                                 headers=HEADERS, timeout=120)
+                if r.status_code in (429, 502, 503, 504):
+                    last_err = f"HTTP {r.status_code}"
+                    r = None
+                    # huge domains: server-side dedup is what times out — do it locally instead
+                    if attempt == 0 and "collapse" in params:
+                        params.pop("collapse")
+                    time.sleep(4 * (attempt + 1))
+                    continue
+                r.raise_for_status()
+                break
+            except requests.RequestException as e:
+                last_err = str(e)
+                r = None
+                time.sleep(3)
+        if r is None:
+            raise requests.RequestException(
+                f"The archive's index timed out for this domain ({last_err}). "
+                "Domains this large may not be fully scannable — try Site folder scope "
+                "or narrow the Time to a custom range.")
         rows = r.json() if r.text.strip() else []
         if rows and rows[0] and rows[0][0] == "timestamp":
             rows = rows[1:]
