@@ -20,8 +20,8 @@ from flask import (Flask, Response, jsonify, render_template, request,
                    send_file, send_from_directory)
 
 from scraper import (HEADERS, cdx_fetch_pages, crawl_pages, extract_media,
-                     fetch_page, norm_url, parse_cdx_row, resolve_wayback,
-                     wayback_median_snapshot)
+                     fetch_page, norm_url, page_snapshots, parse_cdx_row,
+                     resolve_wayback, wayback_median_snapshot)
 
 app = Flask(__name__)
 
@@ -148,41 +148,74 @@ def scrape():
 
             # ---- single page ----
             count = 0
+            seen_norm = set()
             if source in ("live", "both"):
                 yield line({"status": "Fetching page"})
                 html, final_url = fetch_page(url)
-                items = extract_media(html, final_url)
-                for it in items:
-                    live_norms.add(norm_url(it["url"]))
+                fresh = []
+                for it in extract_media(html, final_url):
+                    n = norm_url(it["url"])
+                    if n in seen_norm:
+                        continue
+                    seen_norm.add(n)
                     if source == "both":
                         it["origin"] = "live"
-                count += len(items)
-                yield line({"items": items, "progress": count})
+                    fresh.append(it)
+                count += len(fresh)
+                yield line({"items": fresh, "progress": count})
                 if source == "live":
                     yield line({"done": {"url": final_url, "count": count}})
                     return
-            target = url
-            if "web.archive.org" not in target:
+
+            # archive side: one snapshot for "now", a sampled walk otherwise
+            if "web.archive.org" in url:
+                targets = [url]
+            elif tkind == "now":
                 yield line({"status": "Resolving Wayback snapshot"})
-                snap = resolve_snapshot(target)
-                if not snap:
+                snap = resolve_wayback(url)
+                targets = [snap] if snap else []
+            else:
+                yield line({"status": "Listing the page's snapshots"})
+                try:
+                    targets = page_snapshots(url, cdx_from, cdx_to)
+                except requests.RequestException:
+                    targets = []
+                if not targets:
+                    snap = resolve_snapshot(url)
+                    targets = [snap] if snap else []
+            if not targets:
+                if source == "both":
+                    yield line({"done": {"url": f"{url} (live; no archive snapshots found)",
+                                         "count": count}})
+                else:
+                    yield line({"error": "No Wayback snapshot found for that URL"})
+                return
+            for i, snap in enumerate(targets, 1):
+                ts = snap.split("/web/")[1][:8] if "/web/" in snap else ""
+                nice = f" ({ts[:4]}-{ts[4:6]}-{ts[6:8]})" if len(ts) == 8 and ts.isdigit() else ""
+                yield line({"status": f"Reading snapshot {i}/{len(targets)}{nice}"})
+                try:
+                    html, final_url = fetch_page(snap)
+                except requests.RequestException:
+                    continue
+                fresh = []
+                for it in extract_media(html, final_url):
+                    n = norm_url(it["url"])
+                    if n in seen_norm:
+                        continue
+                    seen_norm.add(n)
                     if source == "both":
-                        yield line({"done": {"url": f"{url} (live; no archive snapshot found)",
-                                             "count": count}})
-                    else:
-                        yield line({"error": "No Wayback snapshot found for that URL"})
-                    return
-                target = snap
-            yield line({"status": "Fetching archived page"})
-            html, final_url = fetch_page(target)
-            arch = extract_media(html, final_url)
+                        it["origin"] = "archive"
+                    fresh.append(it)
+                if fresh:
+                    count += len(fresh)
+                    yield line({"items": fresh, "progress": count})
             if source == "both":
-                arch = [it for it in arch if norm_url(it["url"]) not in live_norms]
-                for it in arch:
-                    it["origin"] = "archive"
-            count += len(arch)
-            yield line({"items": arch, "progress": count})
-            done_url = f"{url} (live + archived snapshot)" if source == "both" else final_url
+                done_url = f"{url} (live + {len(targets)} archived snapshots)"
+            elif len(targets) > 1:
+                done_url = f"{url} ({len(targets)} snapshots across time)"
+            else:
+                done_url = targets[0]
             yield line({"done": {"url": done_url, "count": count}})
         except requests.RequestException as e:
             yield line({"error": f"Request failed: {e}"})

@@ -76,6 +76,29 @@ def wayback_median_snapshot(url: str, ts_from: str | None = None,
     return f"https://web.archive.org/web/{mid}/{url}"
 
 
+def page_snapshots(url: str, ts_from: str | None = None, ts_to: str | None = None,
+                   max_snaps: int = 12) -> list[str]:
+    """Sampled playback URLs across a page's capture history (monthly-collapsed,
+    then evenly thinned to max_snaps, keeping the first and last captures)."""
+    params = {"url": url, "output": "json", "fl": "timestamp",
+              "filter": "statuscode:200", "collapse": "timestamp:6", "limit": "2000"}
+    if ts_from:
+        params["from"] = ts_from
+    if ts_to:
+        params["to"] = ts_to
+    r = requests.get("https://web.archive.org/cdx/search/cdx", params=params,
+                     headers=HEADERS, timeout=60)
+    r.raise_for_status()
+    rows = r.json() if r.text.strip() else []
+    stamps = [row[0] for row in rows[1:] if row]
+    if not stamps:
+        return []
+    if len(stamps) > max_snaps:
+        step = (len(stamps) - 1) / (max_snaps - 1)
+        stamps = [stamps[round(i * step)] for i in range(max_snaps)]
+    return [f"https://web.archive.org/web/{ts}/{url}" for ts in stamps]
+
+
 def _mime_to_type(mime: str) -> str | None:
     if mime.startswith("image/"):
         return "image"
