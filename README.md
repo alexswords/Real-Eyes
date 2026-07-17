@@ -1,24 +1,17 @@
 # Real Eyes 💿
 
-A local Flask application for exhaustive media extraction from live web pages and from the full archived history of sites in the Internet Archive's Wayback Machine. Single-page scrapes are parsed with **BeautifulSoup**; whole-site scrapes are driven by the Wayback CDX index API. Results render in a virtualized, filterable library with an in-browser viewer that plays defunct formats (Flash, Sorenson-era QuickTime, RealMedia) through lazily provisioned emulation and transcoding runtimes.
+A local web app for pulling media out of web pages — live ones, or a site's entire archived history in the Wayback Machine. Built on Flask and BeautifulSoup, with the Wayback CDX API handling whole-site indexing.
 
-## Architecture
+## How it works
 
-Three components, no external services:
+- **Page scrapes** are fetched with Requests and parsed with BeautifulSoup, which collects image, video, and audio references from the page's markup (including srcset variants, lazy-load attributes, media links, and social-card metadata).
+- **Site scrapes** query the Wayback Machine's CDX index instead of crawling, returning every media file ever archived for a domain (or a single folder of one), up to 100,000 entries, streamed in as they're found.
+- **Playback** happens in a floating viewer. Modern formats play natively; Flash runs in the Ruffle emulator, and legacy video/audio (old QuickTime, RealMedia, WMV, FLV…) is converted with ffmpeg. Both runtimes are downloaded on first use and cached — nothing is bundled.
+- Results are shown in a virtualized grid or list that stays smooth at 100k files, with filtering by name, type, archive date, and size.
 
-- **`scraper.py`** — extraction logic. For page scrapes, BeautifulSoup (`html.parser`) walks the DOM and collects media references from `<img>` (`src`, lazy-load `data-src`, and full `srcset` candidate lists), `<video>`/`<audio>` elements and their `<source>` children, `<picture>` sources, direct `<a href>` links to media files, Open Graph / Twitter Card `<meta>` tags, and `url()` references inside inline `style` attributes. URLs are resolved against the document base with `urljoin`, deduplicated, classified by extension/MIME into image/video/audio/other, and filtered of Wayback toolbar noise. For site scrapes, the CDX API is paged via `resumeKey` (10k rows/request, 100k cap) with server-side MIME and status filters, `collapse=urlkey` deduplication, and byte sizes from the `length` field. Playback URLs are constructed with the correct Wayback modifier per type (`im_` for images, `id_` — verbatim original bytes — for everything else).
-- **`app.py`** — Flask server (threaded). `/api/scrape` streams NDJSON: status lines, incremental 250-item batches, and progress counts, so the client renders results as they arrive and an aborted scrape keeps everything gathered. Fetch proxies (`/api/raw`, `/api/download`) retry Wayback modifier variants until one returns 200. `/api/transcode` shells out to a static ffmpeg build (`libx264`/`aac`, even-dimension scale filter for vintage frame sizes, error-tolerant retry pass, audio-only last resort) with SHA-1-keyed on-disk caching. Zip exports run as background jobs with progress polling, cancellation, and 429/503 backoff. A heartbeat watchdog exits the process after ~3 minutes without a client; version/shutdown endpoints let a newer build replace a running server.
-- **`templates/index.html`** — self-contained frontend, no framework. The results grid is windowed/virtualized (only on-screen cards exist in the DOM), so 100k-item libraries scroll without jank in either grid or compact-list mode. Client-side filtering: substring search, archive-date range, minimum size, per-extension toggles, and a folder tree reconstructed from original URL paths. The floating viewer is draggable/resizable, auto-fits media dimensions, and detects silent video-decode failures (zero decoded frames with a live audio track) to reroute files through the transcoder automatically.
+## Running it
 
-## Runtime provisioning
-
-Nothing heavy ships in the repo or the app bundle. On first use the server downloads and caches into `~/Library/Application Support/Real-Eyes/`:
-
-- **Ruffle** (Wasm Flash emulator, ~10 MB) — fetched from its GitHub releases when the first `.swf` is opened; served at `/ruffle/`.
-- **ffmpeg** (static single binary for the host arch) — fetched when the first legacy video/audio file needs conversion; outputs are cached MP4s.
-- A Python virtualenv with the three dependencies in `requirements.txt` (Flask, BeautifulSoup4, Requests), created by the launcher on first run.
-
-## Development
+From source:
 
 ```bash
 python3 -m venv .venv
@@ -26,15 +19,21 @@ python3 -m venv .venv
 .venv/bin/python app.py     # http://127.0.0.1:5001
 ```
 
-## macOS app bundle
+Or build the Mac app:
 
 ```bash
-bash build_app.sh           # emits "Real Eyes.app"
+bash build_app.sh           # emits "Real Eyes.app"; right-click → Open on first launch
 ```
 
-The bundle is a launcher script around the same source: it provisions the venv, version-checks any running server (replacing stale ones), starts Flask headless, and opens the browser when the port answers. Unsigned — right-click → Open on first launch.
+The server shuts itself down a few minutes after the last tab closes.
 
-## Notes
+## Tips
 
-- Ruffle and ffmpeg are downloaded from their official release channels at runtime and are not distributed with this repository.
-- Respect the terms of service and copyright of scraped sites, and rate-limit your enthusiasm toward the Internet Archive — it's a nonprofit.
+- **Sites on big hosts:** use *Local site* mode for anything living inside a larger domain (e.g. `bighost.com/~someone/site`) — *Entire site* would index the whole hosting service.
+- **File-type toggles start off** after a scrape — flip on what you want, or hit **All**. On big grabs, set **Min size** to 5–25 KB to hide icons, spacers, and tracking pixels in one move.
+- **Stopping is safe:** *Stop Scraping* keeps everything gathered so far, fully browsable and downloadable.
+- **Snapshot dates:** with the Wayback box checked and no date given, pages resolve to their *median* capture — usually the site in its prime rather than its broken final days. Enter a year or date to aim elsewhere.
+- **Selecting:** hover a card for its checkbox; shift-click selects ranges. The zip button downloads your selection if one exists, otherwise everything shown. Big zips run in the background — cancelling still delivers a partial archive.
+- **First-time waits:** the first .swf triggers a one-time Ruffle download, and the first legacy video downloads ffmpeg then converts (a minute or so). Both are cached; repeats are instant.
+- **Viewer:** drag it by its title bar, resize from the bottom-left grip, ⚙ for settings (auto-size, mute, loop, dark background — handy for transparent images). Arrow keys step through files; Esc minimizes to a tray pill.
+- Be gentle with the Internet Archive — it's a nonprofit — and respect the terms and copyright of whatever you scrape.
