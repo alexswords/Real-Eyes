@@ -579,6 +579,7 @@ function enrich(items) {
 $('form').addEventListener('submit', async e => {
   e.preventDefault();
   if (!srcSel() || !timeSel() || !scopeSel()) return;
+  const req = { source: srcSel(), scope: scopeSel(), time: timeSel() };
   $('error').style.display = 'none';
   $('toolbar').style.display = 'none';
   $('main').style.display = 'none';
@@ -586,6 +587,7 @@ $('form').addEventListener('submit', async e => {
   $('spinner').style.display = 'block';
   $('busy').style.display = 'block';
   $('go').style.display = 'none';
+  document.querySelectorAll('#srcrow input, #timerow input, #scoperow input').forEach(i => i.disabled = true);
   $('spinner').textContent = 'Scraping';
   $('stopbtn').style.display = 'block';
   scrapeCtl = new AbortController();
@@ -596,9 +598,9 @@ $('form').addEventListener('submit', async e => {
       signal: scrapeCtl.signal,
       body: JSON.stringify({
         url: $('url').value,
-        source: srcSel(),
-        scope: scopeSel(),
-        time: timeSel(),
+        source: req.source,
+        scope: req.scope,
+        time: req.time,
         tfrom: tsOf(cals.from) <= tsOf(cals.to) ? tsOf(cals.from) : tsOf(cals.to),
         tto: tsOf(cals.from) <= tsOf(cals.to) ? tsOf(cals.to) : tsOf(cals.from)
       })
@@ -630,11 +632,11 @@ $('form').addEventListener('submit', async e => {
       }
     }
     if (!doneMeta && !got.length) throw new Error('Scrape returned no result');
-    finalizeScrape(got, doneMeta ? doneMeta.url : $('url').value);
+    finalizeScrape(got, doneMeta ? doneMeta.url : $('url').value, req);
   } catch (err) {
     if (err.name === 'AbortError' && got.length) {
       // stopped early — show everything gathered so far
-      finalizeScrape(got, $('url').value + ' (stopped early — partial results)');
+      finalizeScrape(got, $('url').value + ' (stopped early — partial results)', req);
     } else {
       $('error').textContent = err.name === 'AbortError' ? 'Scraping stopped.' : err.message;
       $('error').style.display = 'block';
@@ -644,6 +646,7 @@ $('form').addEventListener('submit', async e => {
     $('busy').style.display = 'none';
     $('stopbtn').style.display = 'none';
     $('go').style.display = '';
+    document.querySelectorAll('#srcrow input, #timerow input, #scoperow input').forEach(i => i.disabled = false);
     scrapeCtl = null;
   }
 });
@@ -651,18 +654,18 @@ $('form').addEventListener('submit', async e => {
 let scrapeCtl = null;
 $('stopbtn').addEventListener('click', () => { if (scrapeCtl) scrapeCtl.abort(); });
 
-function finalizeScrape(items, srcLabel) {
+function finalizeScrape(items, srcLabel, req) {
   if (!items.length) {
-    const sc = scopeSel();
+    const sc = req.scope;
     $('error').textContent = sc === 'page'
       ? 'No media found on that page.'
       : sc === 'local'
         ? 'Nothing found under that folder. Site folder scope works on folder-style addresses ' +
           '(host.com/user/site). For a single article-style page, use "This page" — its media ' +
           'often lives on other hosts and is found by reading the page itself.'
-        : srcSel() === 'wayback'
+        : req.source === 'wayback'
           ? 'The archive has no media indexed for that domain.'
-          : srcSel() === 'live'
+          : req.source === 'live'
             ? 'The crawl found no media on that site.'
             : 'Neither the live site nor the archive turned up media for that domain.';
     $('error').style.display = 'block';
