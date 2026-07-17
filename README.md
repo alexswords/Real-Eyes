@@ -29,10 +29,11 @@ The server shuts itself down a few minutes after the last tab closes.
 
 ## Tips
 
-- **Sites on big hosts:** use *Local site* mode for anything living inside a larger domain (e.g. `bighost.com/~someone/site`) — *Entire site* would index the whole hosting service.
+- **Source and scope are independent:** pick *Live web* or *Wayback archive*, then how far to reach — one page, this URL’s folder, or the whole site. Live folder/site scrapes crawl up to ~120 pages of the site itself; Wayback folder/site scrapes read the archive’s index across all history.
+- **Sites on big hosts:** use *Site folder* scope for anything living inside a larger domain (e.g. `bighost.com/~someone/site`) — *Entire site* would cover the whole hosting service.
 - **File-type toggles start off** after a scrape — flip on what you want, or hit **All**. On big grabs, set **Min size** to 5–25 KB to hide icons, spacers, and tracking pixels in one move.
 - **Stopping is safe:** *Stop Scraping* keeps everything gathered so far, fully browsable and downloadable.
-- **Snapshot dates:** with the Wayback box checked and no date given, pages resolve to their *median* capture — usually the site in its prime rather than its broken final days. Enter a year or date to aim elsewhere.
+- **Snapshot dates:** with Wayback as the source and no date given, single pages resolve to their *median* capture — usually the site in its prime rather than its broken final days. Enter a year or date to aim elsewhere.
 - **Selecting:** hover a card for its checkbox; shift-click selects ranges. The zip button downloads your selection if one exists, otherwise everything shown. Big zips run in the background — cancelling still delivers a partial archive.
 - **First-time waits:** the first .swf triggers a one-time Ruffle download, and the first legacy video downloads ffmpeg then converts (a minute or so). Both are cached; repeats are instant.
 - **Viewer:** drag it by its title bar, resize from the bottom-left grip, ⚙ for settings (auto-size, mute, loop, dark background — handy for transparent images). Arrow keys step through files; Esc minimizes to a tray pill.
