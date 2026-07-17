@@ -1,6 +1,7 @@
 """Extract all media URLs (images, video, audio) from a web page."""
 from __future__ import annotations
 
+import re
 import time
 from collections import deque
 from urllib.parse import urljoin, urlparse
@@ -80,6 +81,25 @@ def _mime_to_type(mime: str) -> str | None:
     if mime in ("application/x-shockwave-flash", "application/vnd.adobe.flash.movie"):
         return "other"
     return None
+
+
+_WB_PLAYBACK = re.compile(r"https?://web\.archive\.org/web/\d{4,14}(?:[a-z]{2}_)?/(.*)", re.S)
+
+
+def wayback_original(u: str) -> str:
+    """Strip Wayback playback wrapping, returning the originally archived URL."""
+    m = _WB_PLAYBACK.match(u)
+    return m.group(1) if m else u
+
+
+def norm_url(u: str) -> str:
+    """Scheme/www/port-insensitive identity for matching live vs archived files."""
+    u = wayback_original(u)
+    p = urlparse(u if "://" in u else "http://" + u)
+    host = p.netloc.rsplit("@", 1)[-1].replace(":80", "").replace(":443", "")
+    if host.startswith("www."):
+        host = host[4:]
+    return host + p.path
 
 
 def folder_of(path: str) -> str:

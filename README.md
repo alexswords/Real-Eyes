@@ -29,7 +29,7 @@ The server shuts itself down a few minutes after the last tab closes.
 
 ## Tips
 
-- **Source and scope are independent:** pick *Live web* or *Wayback archive*, then how far to reach — one page, this URL’s folder, or the whole site. Live folder/site scrapes crawl up to ~120 pages of the site itself; Wayback folder/site scrapes read the archive’s index across all history.
+- **Source and scope are independent:** pick *Live web*, *Wayback archive*, or *Both* — which scrapes the live site and then adds everything the archive holds that the live site no longer serves, tagging those files “archived” — then choose how far to reach — one page, this URL’s folder, or the whole site. Live folder/site scrapes crawl up to ~120 pages of the site itself; Wayback folder/site scrapes read the archive’s index across all history.
 - **Sites on big hosts:** use *Site folder* scope for anything living inside a larger domain (e.g. `bighost.com/~someone/site`) — *Entire site* would cover the whole hosting service.
 - **File-type toggles start off** after a scrape — flip on what you want, or hit **All**. On big grabs, set **Min size** to 5–25 KB to hide icons, spacers, and tracking pixels in one move.
 - **Stopping is safe:** *Stop Scraping* keeps everything gathered so far, fully browsable and downloadable.

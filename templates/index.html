@@ -216,6 +216,11 @@
   .meta { padding: 6px 8px; font-size: 11px; }
   .meta .name { word-break: break-all; color: #33482d; display: block;
                 max-height: 2.4em; overflow: hidden; }
+  .arch-badge {
+    display: inline-block; margin-left: 4px; border: 1px solid #b8a37a; border-radius: 2px;
+    background: linear-gradient(180deg, #f7f2e2, #eadfc2); color: #7a6535;
+    padding: 0 5px; font-size: 9px; font-weight: 700;
+  }
   .ext-badge {
     display: inline-block; border: 1px solid #a3b88e; border-radius: 2px;
     background: linear-gradient(180deg, #f6faee, #e1ecd0); color: #43663a;
@@ -349,6 +354,7 @@
     <b>Source:</b>
     <label><input type="radio" name="src" value="live" checked> Live web</label>
     <label><input type="radio" name="src" value="wayback"> Wayback archive</label>
+    <label><input type="radio" name="src" value="both" title="Scrape the live site, then add anything the archive has that the live site no longer serves"> Both — live + lost archived files</label>
   </div>
   <div class="wb-row" id="daterow" style="display:none">
     <b>Snapshot date:</b>
@@ -581,9 +587,11 @@ function finalizeScrape(items, srcLabel) {
         ? 'Nothing found under that folder. Site folder scope works on folder-style addresses ' +
           '(host.com/user/site). For a single article-style page, use "This page" — its media ' +
           'often lives on other hosts and is found by reading the page itself.'
-        : (srcSel() === 'wayback'
+        : srcSel() === 'wayback'
           ? 'The archive has no media indexed for that domain.'
-          : 'The crawl found no media on that site.');
+          : srcSel() === 'live'
+            ? 'The crawl found no media on that site.'
+            : 'Neither the live site nor the archive turned up media for that domain.';
     $('error').style.display = 'block';
   }
   media = items;
@@ -866,7 +874,7 @@ function renderVirtual(force) {
         <span class="rthumb">${rthumb}</span>
         <span class="rname" title="${esc(m.url)}">${esc(m.name)}</span>
         <span class="rfold">${esc(m.folder)}</span>
-        <span class="rext">${esc(m.ext)}</span>
+        <span class="rext">${esc(m.ext)}</span>${m.origin === 'archive' ? '<span class="arch-badge">archived</span>' : ''}
         <span class="rsize">${fmtSize(m.size)}</span>
         <span class="rdate">${m.ts ? fmtTs(m.ts) : ''}</span>
       </div>`;
@@ -881,7 +889,7 @@ function renderVirtual(force) {
         <div class="thumb">${thumb}</div>
         <div class="meta">
           <span class="name" title="${esc(m.url)}">${esc(m.name)}</span>
-          <span class="ext-badge">${esc(m.ext)}</span>
+          <span class="ext-badge">${esc(m.ext)}</span>${m.origin === 'archive' ? '<span class="arch-badge">archived</span>' : ''}
         </div></div>`;
     }
   }
@@ -1000,6 +1008,7 @@ function openViewer(m) {
   $('vfirst').disabled = $('vprev').disabled = $('vback10').disabled = i <= 0;
   $('vnext').disabled = $('vlast').disabled = $('vfwd10').disabled = i >= items.length - 1;
   $('vmeta').innerHTML = `<b>${m.name}</b><br>${m.folder}<br>${m.ext} · ${m.type}` +
+    (m.origin === 'archive' ? ' · <b>archive-only</b> — gone from the live site' : '') +
     (m.ts ? `<br>archived ${fmtTs(m.ts)}` : '') + (m.size ? `<br>${fmtSize(m.size)}` : '');
   $('vlinks').innerHTML =
     `<a href="${m.url}" target="_blank" rel="noopener">open in new tab</a>` +
