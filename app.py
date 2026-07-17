@@ -210,10 +210,42 @@ def scrape():
                 if fresh:
                     count += len(fresh)
                     yield line({"items": fresh, "progress": count})
+            swept = False
+            if tkind != "now":
+                # complementary sweep: EVERY file the archive ever stored in this
+                # page's folder — closes the gaps between sampled snapshots
+                yield line({"status": "Sweeping the page's folder in the archive index"})
+                seen_cdx = set()
+                try:
+                    for kind, payload in cdx_fetch_pages(url, scope="path",
+                                                         total_limit=20000,
+                                                         ts_from=cdx_from, ts_to=cdx_to):
+                        if kind == "status":
+                            yield line({"status": payload})
+                            continue
+                        fresh = []
+                        for row in payload:
+                            item = parse_cdx_row(row, seen_cdx)
+                            if not item:
+                                continue
+                            n = norm_url(item["url"])
+                            if n in seen_norm:
+                                continue
+                            seen_norm.add(n)
+                            if source == "both":
+                                item["origin"] = "archive"
+                            fresh.append(item)
+                        if fresh:
+                            count += len(fresh)
+                            yield line({"items": fresh, "progress": count})
+                    swept = True
+                except requests.RequestException as e:
+                    yield line({"status": f"Folder index sweep skipped ({e})"})
+            extra = " + folder index" if swept else ""
             if source == "both":
-                done_url = f"{url} (live + {len(targets)} archived snapshots)"
-            elif len(targets) > 1:
-                done_url = f"{url} ({len(targets)} snapshots across time)"
+                done_url = f"{url} (live + {len(targets)} archived snapshots{extra})"
+            elif len(targets) > 1 or swept:
+                done_url = f"{url} ({len(targets)} snapshots{extra} across time)"
             else:
                 done_url = targets[0]
             yield line({"done": {"url": done_url, "count": count}})
