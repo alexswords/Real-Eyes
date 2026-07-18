@@ -25,9 +25,13 @@ macOS app: `bash build_app.sh`.
   - `norm_url`: scheme/www/port-insensitive identity, strips Wayback wrapping —
     the key for live-vs-archive matching and all dedup.
   - CDX: `_cdx_target` (host or host+folder), `cdx_fetch_pages` (paged media
-    index w/ resumeKey, 429/5xx backoff), `cdx_html_pages` (archived HTML pages,
-    for deep site scans), `page_snapshots` (a page's capture history; deep=daily
-    capped 500, else ~12 samples), `parse_cdx_row`.
+    index w/ resumeKey, 429/5xx backoff), `cdx_html_pages` (archived HTML pages
+    for deep site scans — up to 4 captures spread per page, deterministic, capped
+    500 reads), `page_snapshots` (a page's capture history; deep=daily capped
+    500, else ~12 samples), `parse_cdx_row`.
+  - `fetch_page_retry`: 429/5xx backoff — ALL archive page reads go through it
+    (plain `fetch_page` is for live pages only). Skipping failures silently made
+    deep runs nondeterministic; skips are now counted and reported in `done.url`.
   - `_gif_scan`/`is_animated_gif`: real GIF block-structure parser; tri-state
     True/False/None — None (undetermined) must never hide a file.
   - `crawl_pages`: BFS over live site, same-host, optional folder prefix.
@@ -52,6 +56,8 @@ macOS app: `bash build_app.sh`.
   a live norm are dropped; survivors get `origin: "archive"` (UI badge).
 - The archive rate-limits (429) aggressively — every CDX caller must tolerate
   it, and any per-file probe failure must degrade to "unknown", not "negative".
+  `/api/animated` caches determined results (`_ANIM_CACHE`); the UI probes with
+  2 paced workers + a concurrency guard (more workers 429s and breaks thumbnails).
 - Deep semantics: page scope = read every capture; site/local = also read the
   site's archived HTML pages (catches media on other domains / CSS-only refs).
 - `time` param: now / range (tfrom+tto, YYYYMMDD) / all; "now" archive side =

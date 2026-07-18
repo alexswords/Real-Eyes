@@ -313,33 +313,61 @@ def cdx_fetch_pages(url: str, total_limit: int = 100000, page_size: int = 10000,
 
 
 def cdx_html_pages(url: str, scope: str = "domain", ts_from: str | None = None,
-                   ts_to: str | None = None, limit: int = 500) -> list[str]:
-    """Playback URLs for the archived HTML pages of a site/folder (one capture per
-    page URL). Used by deep site scans to catch media the CDX media sweep misses —
-    files hosted on other domains, or referenced from CSS/markup only."""
+                   ts_to: str | None = None, max_fetch: int = 500,
+                   per_page: int = 4) -> list[str]:
+    """Playback URLs for the archived HTML pages of a site/folder. Used by deep
+    site scans to catch media the CDX media sweep misses — files hosted on other
+    domains, or referenced from CSS/markup only.
+
+    Pages change over time, so up to `per_page` captures spread evenly across
+    each page's history are returned (a single capture per page misses media that
+    only existed in older versions). Output is deterministic: sorted by page URL,
+    thinned evenly to `max_fetch` total reads."""
     domain = _cdx_target(url, scope)
     params = {
         "url": domain + "/*",
         "output": "json",
         "fl": "timestamp,original",
         "filter": ["statuscode:200", "mimetype:text/html"],
-        "collapse": "urlkey",
-        "limit": str(limit),
+        "collapse": "timestamp:6",           # ≤ one capture per page per month
+        "limit": "20000",
     }
     if ts_from:
         params["from"] = ts_from
     if ts_to:
         params["to"] = ts_to
-    r = requests.get("https://web.archive.org/cdx/search/cdx", params=params,
-                     headers=HEADERS, timeout=120)
-    r.raise_for_status()
-    rows = r.json() if r.text.strip() else []
-    out, seen = [], set()
+    rows, last = None, None
+    for attempt in range(3):                 # the index itself rate-limits too
+        try:
+            r = requests.get("https://web.archive.org/cdx/search/cdx", params=params,
+                             headers=HEADERS, timeout=120)
+            if r.status_code == 429:
+                last = "HTTP 429"
+                time.sleep(min(int(r.headers.get("Retry-After") or 0) or 10 * (attempt + 1), 60))
+                continue
+            r.raise_for_status()
+            rows = r.json() if r.text.strip() else []
+            break
+        except requests.RequestException as e:
+            last = str(e)
+            time.sleep(4 * (attempt + 1))
+    if rows is None:
+        raise requests.RequestException(last or "CDX page listing failed")
+
+    by_page: dict[str, list[str]] = {}
     for row in rows[1:]:                     # first row is the header
-        if len(row) < 2 or row[1] in seen:
-            continue
-        seen.add(row[1])
-        out.append(f"https://web.archive.org/web/{row[0]}/{row[1]}")
+        if len(row) >= 2:
+            by_page.setdefault(row[1], []).append(row[0])
+    out = []
+    for original in sorted(by_page):
+        stamps = sorted(set(by_page[original]))
+        if len(stamps) > per_page:           # spread: first, last, evenly between
+            step = (len(stamps) - 1) / (per_page - 1)
+            stamps = [stamps[round(i * step)] for i in range(per_page)]
+        out.extend(f"https://web.archive.org/web/{ts}/{original}" for ts in stamps)
+    if len(out) > max_fetch:                 # thin evenly, keeping determinism
+        step = (len(out) - 1) / (max_fetch - 1)
+        out = [out[round(i * step)] for i in range(max_fetch)]
     return out
 
 
@@ -428,6 +456,31 @@ def fetch_page(url: str) -> tuple[str, str]:
     resp = requests.get(url, headers=HEADERS, timeout=20)
     resp.raise_for_status()
     return resp.text, resp.url
+
+
+def fetch_page_retry(url: str, attempts: int = 3) -> tuple[str, str]:
+    """fetch_page with backoff on 429/5xx — for archive reads, which get
+    rate-limited aggressively. Silently skipping those failures made deep scans
+    return different results each run; retrying makes them reproducible."""
+    last = None
+    for a in range(attempts):
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=20)
+            if r.status_code == 429:
+                last = "HTTP 429"
+                time.sleep(min(int(r.headers.get("Retry-After") or 0) or 8 * (a + 1), 45))
+                continue
+            if r.status_code in (502, 503, 504):
+                last = f"HTTP {r.status_code}"
+                time.sleep(4 * (a + 1))
+                continue
+            r.raise_for_status()
+            return r.text, r.url
+        except requests.RequestException as e:
+            last = str(e)
+            if a < attempts - 1:
+                time.sleep(3 * (a + 1))
+    raise requests.RequestException(last or "fetch failed")
 
 
 def _gif_scan(buf: bytes, whole: bool) -> bool | None:

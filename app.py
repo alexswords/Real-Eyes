@@ -20,8 +20,8 @@ from flask import (Flask, Response, jsonify, render_template, request,
                    send_file, send_from_directory)
 
 from scraper import (HEADERS, cdx_fetch_pages, cdx_html_pages, crawl_pages,
-                     extract_media, fetch_page, is_animated_gif, norm_url,
-                     page_snapshots, parse_cdx_row, resolve_wayback,
+                     extract_media, fetch_page, fetch_page_retry, is_animated_gif,
+                     norm_url, page_snapshots, parse_cdx_row, resolve_wayback,
                      wayback_median_snapshot)
 
 app = Flask(__name__)
@@ -141,11 +141,12 @@ def scrape():
                 if batch:
                     count += len(batch)
                     yield line({"items": batch, "progress": count})
-                pages_read = 0
+                pages_read = pages_skipped = 0
                 if deep:
                     # deep site scan: read the archived HTML pages themselves — they
                     # reference media the domain CDX sweep can't see (files hosted on
-                    # other domains, or only reachable through markup/CSS)
+                    # other domains, or only reachable through markup/CSS). Several
+                    # captures per page: media hides in older page versions.
                     yield line({"status": "Deep — listing the site's archived pages"})
                     try:
                         page_urls = cdx_html_pages(url, scope=cdx_scope,
@@ -154,11 +155,20 @@ def scrape():
                         page_urls = []
                         yield line({"status": f"Deep page read skipped ({e})"})
                     seen_norm = {norm_url(o) for o in seen_cdx} | live_norms
+                    fail_streak = 0
                     for i, snap in enumerate(page_urls, 1):
                         yield line({"status": f"Deep — reading archived page {i}/{len(page_urls)}"})
                         try:
-                            html, final_url = fetch_page(snap)
+                            html, final_url = fetch_page_retry(snap)
+                            fail_streak = 0
                         except requests.RequestException:
+                            pages_skipped += 1
+                            fail_streak += 1
+                            if fail_streak >= 8:
+                                yield line({"status": "Archive is refusing page reads — "
+                                                      "stopping the deep pass early"})
+                                pages_skipped += len(page_urls) - i
+                                break
                             continue
                         pages_read += 1
                         fresh = []
@@ -173,12 +183,14 @@ def scrape():
                         if fresh:
                             count += len(fresh)
                             yield line({"items": fresh, "progress": count})
-                        time.sleep(0.2)          # politeness toward the archive
+                        time.sleep(0.3)          # politeness toward the archive
                 hist = ("archive " + (tfrom or "…") + "–" + (tto or "…") if tkind == "range"
                         else "recent archive captures" if tkind == "now"
                         else "all archived history")
-                if pages_read:
+                if pages_read or pages_skipped:
                     hist += f" + {pages_read} page reads"
+                    if pages_skipped:
+                        hist += f" ({pages_skipped} unreachable — rerun to fill gaps)"
                 suffix = ("live + " + hist) if source == "both" else hist
                 yield line({"done": {"url": f"{url} ({label}, {suffix})", "count": count}})
                 return
@@ -229,13 +241,15 @@ def scrape():
                 else:
                     yield line({"error": "No Wayback snapshot found for that URL"})
                 return
+            snaps_skipped = 0
             for i, snap in enumerate(targets, 1):
                 ts = snap.split("/web/")[1][:8] if "/web/" in snap else ""
                 nice = f" ({ts[:4]}-{ts[4:6]}-{ts[6:8]})" if len(ts) == 8 and ts.isdigit() else ""
                 yield line({"status": f"Reading snapshot {i}/{len(targets)}{nice}"})
                 try:
-                    html, final_url = fetch_page(snap)
+                    html, final_url = fetch_page_retry(snap)
                 except requests.RequestException:
+                    snaps_skipped += 1
                     continue
                 fresh = []
                 for it in extract_media(html, final_url):
@@ -285,6 +299,9 @@ def scrape():
                 snaps = {seen_norm[n]: c for n, c in appears.items() if n in seen_norm}
                 yield line({"meta": {"snaps": snaps, "total": len(targets)}})
             extra = " + folder index" if swept else ""
+            if snaps_skipped:
+                extra += (f", {snaps_skipped} snapshot"
+                          f"{'s' if snaps_skipped != 1 else ''} unreachable — rerun to fill gaps")
             if source == "both":
                 done_url = f"{url} (live + {len(targets)} archived snapshots{extra})"
             elif len(targets) > 1 or swept:
@@ -350,12 +367,19 @@ def download_one():
         headers={"Content-Disposition": 'attachment; filename="%s"' % name})
 
 
+_ANIM_CACHE: dict[str, bool] = {}
+
+
 @app.get("/api/animated")
 def animated():
     url = request.args.get("url", "")
     if not url.startswith(("http://", "https://")):
         return jsonify({"error": "Bad URL"}), 400
+    if url in _ANIM_CACHE:                    # determined once = determined forever
+        return jsonify({"animated": _ANIM_CACHE[url]})
     res = is_animated_gif(url)
+    if res is not None:                       # never cache "undetermined" — retries may resolve it
+        _ANIM_CACHE[url] = res
     return jsonify({"animated": res})
 
 

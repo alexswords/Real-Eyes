@@ -832,7 +832,9 @@ $('tree').addEventListener('click', e => {
 function renderChips() {
   const counts = {};
   media.filter(inFolder).forEach(m => counts[m.ext] = (counts[m.ext] || 0) + 1);
-  const anim = agifsOnly ? media.filter(m => m.ext === 'gif' && m.animated !== false).length : 0;
+  const gifsAll = agifsOnly ? media.filter(m => m.ext === 'gif') : [];
+  const anim = gifsAll.filter(m => m.animated !== false).length;
+  const unk = gifsAll.filter(m => m.animated == null).length;
   $('chips').innerHTML = Object.keys(counts).sort().map(ext => {
     const sw = `<label class="switch">
        <input type="checkbox" data-ext="${ext}" ${extOff.has(ext) ? '' : 'checked'}>
@@ -842,7 +844,7 @@ function renderChips() {
     if (ext === 'gif' && !extOff.has('gif'))
       return sw + `<label class="switch subsw ${gifProbing ? 'busy' : ''}" title="Hide static GIFs — probes files on demand">
          <input type="checkbox" id="agifs" ${agifsOnly ? 'checked' : ''}>
-         <span class="knob"></span><span class="lbl">animated only${agifsOnly && !gifProbing ? ` (${anim})` : ''}</span></label>`;
+         <span class="knob"></span><span class="lbl">animated only${agifsOnly && !gifProbing ? ` (${anim}${unk ? `, ${unk} unprobed` : ''})` : ''}</span></label>`;
     return sw;
   }).join('');
 }
@@ -862,6 +864,7 @@ $('chips').addEventListener('change', async e => {
 });
 
 async function probeGifs() {
+  if (gifProbing) return;   // one swarm at a time — re-toggling used to stack swarms
   // only probe gifs that are actually on display right now (respects folder + filters)
   const pending = visible().filter(m => m.ext === 'gif' && m.animated == null);  // undefined OR null (retry undetermined)
   if (!pending.length) return;
@@ -869,7 +872,7 @@ async function probeGifs() {
   renderChips();
   let i = 0, since = 0;
   async function worker() {
-    while (i < pending.length) {
+    while (i < pending.length && agifsOnly) {   // bail if the toggle flips off
       const m = pending[i++];
       try {
         const r = await fetch('/api/animated?url=' + encodeURIComponent(m.url));
@@ -879,9 +882,11 @@ async function probeGifs() {
         m.animated = a === true ? true : a === false ? false : null;
       } catch (e) { m.animated = null; }
       if (++since >= 8) { since = 0; invalidateView(); renderVirtual(true); }  // stream results
+      await new Promise(res => setTimeout(res, 120));  // stay under the archive's rate limit
     }
   }
-  await Promise.all([worker(), worker(), worker(), worker()]);
+  // 2 paced workers — 4 flat-out tripped 429s that also broke thumbnail loading
+  await Promise.all([worker(), worker()]);
   gifProbing = false;
 }
 
