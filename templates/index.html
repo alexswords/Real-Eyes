@@ -169,8 +169,10 @@
   }
   .chipactions { display: flex; gap: 6px; }
   .chipactions button { padding: 3px 10px; font-size: 11px; }
-  .subsw { grid-column: 1 / -1; margin-left: 22px; }
+  .subsw { grid-column: 1 / -1; margin: 1px 0 3px 24px; padding-left: 8px;
+           border-left: 2px solid #b8cf9c; }
   .subsw .lbl { font-size: 11px; color: #557a3f; }
+  .subsw.busy .lbl::after { content: " — checking…"; color: #99a68c; }
   .switch { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; font-size: 12px;
             user-select: none; }
   .switch input { display: none; }
@@ -484,6 +486,7 @@ let enlargeMult = 1;
 let picked = new Set(), lastPickIdx = -1;
 let fQ = '', fYFrom = 0, fYTo = 0, fMinKB = 0;
 let agifsOnly = false;
+let gifProbing = false;
 const NEEDS_CONVERT = new Set(['flv', 'wmv', 'avi', 'mpg', 'mpeg', '3gp', 'm2v', 'mts',
                                'rm', 'rmvb', 'asf', 'wma', 'ra', 'amr', 'aif', 'aiff']);
 const convertUrl = m => '/api/transcode?v=2&url=' + encodeURIComponent(m.url);
@@ -765,7 +768,7 @@ function visible() {
         && (!fYFrom || !m.ts || m.ts >= fYFrom * 1e10)
         && (!fYTo || !m.ts || m.ts < (fYTo + 1) * 1e10)
         && (!fMinKB || !m.size || m.size >= fMinKB * 1024)
-        && (!agifsOnly || m.ext !== 'gif' || m.animated === true))
+        && (!agifsOnly || m.ext !== 'gif' || m.animated !== false))
       .sort(sorters[$('sortby').value] || sorters.ext);
   return visCache;
 }
@@ -813,6 +816,7 @@ $('tree').addEventListener('click', e => {
 function renderChips() {
   const counts = {};
   media.filter(inFolder).forEach(m => counts[m.ext] = (counts[m.ext] || 0) + 1);
+  const anim = agifsOnly ? media.filter(m => m.ext === 'gif' && m.animated === true).length : 0;
   $('chips').innerHTML = Object.keys(counts).sort().map(ext => {
     const sw = `<label class="switch">
        <input type="checkbox" data-ext="${ext}" ${extOff.has(ext) ? '' : 'checked'}>
@@ -820,9 +824,9 @@ function renderChips() {
        <span class="lbl">${ext} (${counts[ext]})</span>
      </label>`;
     if (ext === 'gif' && !extOff.has('gif'))
-      return sw + `<label class="switch subsw" title="Show only animated GIFs (probes files on demand)">
+      return sw + `<label class="switch subsw ${gifProbing ? 'busy' : ''}" title="Hide static GIFs — probes files on demand">
          <input type="checkbox" id="agifs" ${agifsOnly ? 'checked' : ''}>
-         <span class="knob"></span><span class="lbl">animated only</span></label>`;
+         <span class="knob"></span><span class="lbl">animated only${agifsOnly && !gifProbing ? ` (${anim})` : ''}</span></label>`;
     return sw;
   }).join('');
 }
@@ -830,8 +834,8 @@ function renderChips() {
 $('chips').addEventListener('change', async e => {
   if (e.target.id === 'agifs') {
     agifsOnly = e.target.checked;
-    if (agifsOnly) await probeGifs();
-    render();
+    render();                 // apply filter immediately (hides confirmed-static only)
+    if (agifsOnly) { await probeGifs(); render(); renderChips(); }
     return;
   }
   const ext = e.target.dataset.ext;
@@ -841,10 +845,12 @@ $('chips').addEventListener('change', async e => {
 });
 
 async function probeGifs() {
-  const pending = media.filter(m => m.ext === 'gif' && m.animated === undefined && inFolder(m));
+  // only probe gifs that are actually on display right now (respects folder + filters)
+  const pending = visible().filter(m => m.ext === 'gif' && m.animated === undefined);
   if (!pending.length) return;
-  $('busy').style.display = 'block';
-  let i = 0;
+  gifProbing = true;
+  renderChips();
+  let i = 0, since = 0;
   async function worker() {
     while (i < pending.length) {
       const m = pending[i++];
@@ -852,10 +858,11 @@ async function probeGifs() {
         const r = await fetch('/api/animated?url=' + encodeURIComponent(m.url));
         m.animated = (await r.json()).animated === true;
       } catch (e) { m.animated = false; }
+      if (++since >= 8) { since = 0; invalidateView(); renderVirtual(true); }  // stream results
     }
   }
-  await Promise.all([worker(), worker(), worker(), worker()]);  // 4 parallel probes
-  $('busy').style.display = 'none';
+  await Promise.all([worker(), worker(), worker(), worker()]);
+  gifProbing = false;
 }
 
 $('extall').addEventListener('click', () => {

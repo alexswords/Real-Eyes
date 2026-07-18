@@ -129,7 +129,7 @@ def norm_url(u: str) -> str:
     host = p.netloc.rsplit("@", 1)[-1].replace(":80", "").replace(":443", "")
     if host.startswith("www."):
         host = host[4:]
-    return host + p.path
+    return host + p.path + (("?" + p.query) if p.query else "")
 
 
 def folder_of(path: str) -> str:
