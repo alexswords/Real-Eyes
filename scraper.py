@@ -21,7 +21,8 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; Real-Eyes/1.0)"}
 
 
 def classify(url: str) -> str | None:
-    ext = "." + urlparse(url).path.rsplit(".", 1)[-1].lower() if "." in urlparse(url).path else ""
+    path = urlparse(url).path
+    ext = "." + path.rsplit(".", 1)[-1].lower() if "." in path else ""
     if ext in IMG_EXTS:
         return "image"
     if ext in VIDEO_EXTS:
@@ -176,6 +177,15 @@ def crawl_pages(start_url: str, scope: str = "domain", max_pages: int = 120):
         time.sleep(0.1)                  # politeness
 
 
+def _cdx_target(url: str, scope: str) -> str:
+    """CDX query target for a URL: its host, or host + folder for scope='path'
+    (for sites living inside a big hosting domain)."""
+    parsed = urlparse(url if "://" in url else "https://" + url)
+    if scope == "path" and parsed.path.strip("/"):
+        return (parsed.netloc + folder_of(parsed.path)).rstrip("/")
+    return parsed.netloc or url
+
+
 def cdx_fetch_rows(url: str, limit: int = 20000) -> list:
     """Raw CDX index rows for every archived media file on a domain."""
     parsed = urlparse(url if "://" in url else "https://" + url)
@@ -225,11 +235,7 @@ def cdx_fetch_pages(url: str, total_limit: int = 100000, page_size: int = 10000,
     scope="domain": everything on the host. scope="path": only URLs under the
     given URL's folder — for sites living inside a big hosting domain.
     """
-    parsed = urlparse(url if "://" in url else "https://" + url)
-    if scope == "path" and parsed.path.strip("/"):
-        domain = (parsed.netloc + folder_of(parsed.path)).rstrip("/")
-    else:
-        domain = parsed.netloc or url
+    domain = _cdx_target(url, scope)
     resume, fetched = None, 0
     while fetched < total_limit:
         params = {
@@ -311,11 +317,7 @@ def cdx_html_pages(url: str, scope: str = "domain", ts_from: str | None = None,
     """Playback URLs for the archived HTML pages of a site/folder (one capture per
     page URL). Used by deep site scans to catch media the CDX media sweep misses —
     files hosted on other domains, or referenced from CSS/markup only."""
-    parsed = urlparse(url if "://" in url else "https://" + url)
-    if scope == "path" and parsed.path.strip("/"):
-        domain = (parsed.netloc + folder_of(parsed.path)).rstrip("/")
-    else:
-        domain = parsed.netloc or url
+    domain = _cdx_target(url, scope)
     params = {
         "url": domain + "/*",
         "output": "json",
