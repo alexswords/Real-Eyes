@@ -19,9 +19,10 @@ import requests
 from flask import (Flask, Response, jsonify, render_template, request,
                    send_file, send_from_directory)
 
-from scraper import (HEADERS, cdx_fetch_pages, crawl_pages, extract_media,
-                     fetch_page, is_animated_gif, norm_url, page_snapshots,
-                     parse_cdx_row, resolve_wayback, wayback_median_snapshot)
+from scraper import (HEADERS, cdx_fetch_pages, cdx_html_pages, crawl_pages,
+                     extract_media, fetch_page, is_animated_gif, norm_url,
+                     page_snapshots, parse_cdx_row, resolve_wayback,
+                     wayback_median_snapshot)
 
 app = Flask(__name__)
 
@@ -140,9 +141,44 @@ def scrape():
                 if batch:
                     count += len(batch)
                     yield line({"items": batch, "progress": count})
+                pages_read = 0
+                if deep:
+                    # deep site scan: read the archived HTML pages themselves — they
+                    # reference media the domain CDX sweep can't see (files hosted on
+                    # other domains, or only reachable through markup/CSS)
+                    yield line({"status": "Deep — listing the site's archived pages"})
+                    try:
+                        page_urls = cdx_html_pages(url, scope=cdx_scope,
+                                                   ts_from=cdx_from, ts_to=cdx_to)
+                    except requests.RequestException as e:
+                        page_urls = []
+                        yield line({"status": f"Deep page read skipped ({e})"})
+                    seen_norm = {norm_url(o) for o in seen_cdx} | live_norms
+                    for i, snap in enumerate(page_urls, 1):
+                        yield line({"status": f"Deep — reading archived page {i}/{len(page_urls)}"})
+                        try:
+                            html, final_url = fetch_page(snap)
+                        except requests.RequestException:
+                            continue
+                        pages_read += 1
+                        fresh = []
+                        for it in extract_media(html, final_url):
+                            n = norm_url(it["url"])
+                            if n in seen_norm:
+                                continue
+                            seen_norm.add(n)
+                            if source == "both":
+                                it["origin"] = "archive"
+                            fresh.append(it)
+                        if fresh:
+                            count += len(fresh)
+                            yield line({"items": fresh, "progress": count})
+                        time.sleep(0.2)          # politeness toward the archive
                 hist = ("archive " + (tfrom or "…") + "–" + (tto or "…") if tkind == "range"
                         else "recent archive captures" if tkind == "now"
                         else "all archived history")
+                if pages_read:
+                    hist += f" + {pages_read} page reads"
                 suffix = ("live + " + hist) if source == "both" else hist
                 yield line({"done": {"url": f"{url} ({label}, {suffix})", "count": count}})
                 return

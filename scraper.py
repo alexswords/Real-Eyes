@@ -306,6 +306,41 @@ def cdx_fetch_pages(url: str, total_limit: int = 100000, page_size: int = 10000,
             return
 
 
+def cdx_html_pages(url: str, scope: str = "domain", ts_from: str | None = None,
+                   ts_to: str | None = None, limit: int = 500) -> list[str]:
+    """Playback URLs for the archived HTML pages of a site/folder (one capture per
+    page URL). Used by deep site scans to catch media the CDX media sweep misses —
+    files hosted on other domains, or referenced from CSS/markup only."""
+    parsed = urlparse(url if "://" in url else "https://" + url)
+    if scope == "path" and parsed.path.strip("/"):
+        domain = (parsed.netloc + folder_of(parsed.path)).rstrip("/")
+    else:
+        domain = parsed.netloc or url
+    params = {
+        "url": domain + "/*",
+        "output": "json",
+        "fl": "timestamp,original",
+        "filter": ["statuscode:200", "mimetype:text/html"],
+        "collapse": "urlkey",
+        "limit": str(limit),
+    }
+    if ts_from:
+        params["from"] = ts_from
+    if ts_to:
+        params["to"] = ts_to
+    r = requests.get("https://web.archive.org/cdx/search/cdx", params=params,
+                     headers=HEADERS, timeout=120)
+    r.raise_for_status()
+    rows = r.json() if r.text.strip() else []
+    out, seen = [], set()
+    for row in rows[1:]:                     # first row is the header
+        if len(row) < 2 or row[1] in seen:
+            continue
+        seen.add(row[1])
+        out.append(f"https://web.archive.org/web/{row[0]}/{row[1]}")
+    return out
+
+
 def cdx_site_media(url: str, limit: int = 20000) -> list[dict]:
     """Every media URL ever archived for a whole site, via the Wayback CDX API."""
     rows = cdx_fetch_rows(url, limit)
@@ -393,21 +428,75 @@ def fetch_page(url: str) -> tuple[str, str]:
     return resp.text, resp.url
 
 
+def _gif_scan(buf: bytes, whole: bool) -> bool | None:
+    """Walk a GIF's block structure counting image descriptors (frames).
+
+    True = 2+ frames (animated), False = structure finished with <2 (static),
+    None = need more data / not parseable. Counting real image descriptors —
+    not raw 0x2C bytes, which also occur inside color tables and pixel data —
+    is what makes the answer reliable."""
+    if len(buf) < 13 or buf[:6] not in (b"GIF87a", b"GIF89a"):
+        return None
+    packed = buf[10]
+    pos = 13
+    if packed & 0x80:                        # global color table
+        pos += 3 * (2 << (packed & 0x07))
+    frames = 0
+
+    def skip_subblocks(p: int) -> int:       # -1 = truncated mid-chain
+        while True:
+            if p >= len(buf):
+                return -1
+            size = buf[p]
+            p += 1
+            if size == 0:
+                return p
+            p += size
+
+    while pos < len(buf):
+        marker = buf[pos]
+        pos += 1
+        if marker == 0x3B:                   # trailer — file complete
+            return frames >= 2
+        if marker == 0x00:                   # zero padding between blocks
+            continue
+        if marker == 0x21:                   # extension: label byte + sub-blocks
+            pos = skip_subblocks(pos + 1)
+        elif marker == 0x2C:                 # image descriptor — one frame
+            frames += 1
+            if frames >= 2:
+                return True
+            if pos + 9 > len(buf):
+                return None
+            ipacked = buf[pos + 8]
+            pos += 9
+            if ipacked & 0x80:               # local color table
+                pos += 3 * (2 << (ipacked & 0x07))
+            pos = skip_subblocks(pos + 1)    # LZW min-code byte, then data
+        else:                                # corrupt / unknown block
+            return None
+        if pos == -1:
+            return None
+    # buffer exhausted without a trailer: clean end of a whole file -> static
+    return False if whole else None
+
+
 def is_animated_gif(url: str) -> bool | None:
-    """True/False if `url` is an animated GIF; None if undetermined. Reads only
-    enough bytes to count image-separator (0x2C) blocks."""
+    """True/False if `url` is an animated GIF; None if undetermined. Streams the
+    file and parses its block structure, stopping at the second frame."""
     try:
         r = requests.get(url, headers=HEADERS, timeout=20, stream=True)
         r.raise_for_status()
         buf = b""
         for chunk in r.iter_content(65536):
             buf += chunk
-            if buf[:6] not in (b"GIF87a", b"GIF89a"):
-                return None
-            if buf.count(b"\x2c") >= 2:      # a second frame -> animated
-                return True
-            if len(buf) > 2_000_000:
-                break
-        return False
+            if len(buf) >= 6 and buf[:6] not in (b"GIF87a", b"GIF89a"):
+                return None                  # not GIF bytes at all
+            res = _gif_scan(buf, whole=False)
+            if res is not None:
+                return res
+            if len(buf) > 8_000_000:
+                return None                  # giving up mid-file -> undetermined
+        return _gif_scan(buf, whole=True)
     except requests.RequestException:
         return None

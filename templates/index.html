@@ -375,7 +375,7 @@
     <span class="gocol">
       <button type="submit" id="go" class="primary" disabled title="Choose a source, time, and scope first">Start Scrape</button>
       <button type="button" id="stopbtn">■ Stop Scraping</button>
-      <label id="deeprow" style="display:none"><input type="checkbox" id="deep"> Deep — read every capture (slow)</label>
+      <label id="deeprow" style="display:none"><input type="checkbox" id="deep"> <span id="deeplbl">Deep — read every capture (slow)</span></label>
     </span>
     <button type="button" id="home" title="Clear results and start over">Clear</button>
   </form>
@@ -543,9 +543,12 @@ function updateFlow() {
   $('timerow').style.display = s ? 'grid' : 'none';
   $('calrow').style.display = s && t === 'range' ? 'flex' : 'none';
   $('scoperow').style.display = s && t ? 'grid' : 'none';
-  const deepOK = (s === 'wayback' || s === 'both') && scopeSel() === 'page' && (t === 'range' || t === 'all');
+  const deepOK = (s === 'wayback' || s === 'both') && (t === 'range' || t === 'all');
   $('deeprow').style.display = deepOK ? 'flex' : 'none';
   if (!deepOK) $('deep').checked = false;
+  $('deeplbl').textContent = scopeSel() === 'page' || !scopeSel()
+    ? 'Deep — read every capture (slow)'
+    : 'Deep — also read archived pages (slow)';
   $('go').disabled = !(s && t && scopeSel());
 }
 document.querySelectorAll('input[name=src], input[name=time], input[name=scope]').forEach(r =>
@@ -829,7 +832,7 @@ $('tree').addEventListener('click', e => {
 function renderChips() {
   const counts = {};
   media.filter(inFolder).forEach(m => counts[m.ext] = (counts[m.ext] || 0) + 1);
-  const anim = agifsOnly ? media.filter(m => m.ext === 'gif' && m.animated === true).length : 0;
+  const anim = agifsOnly ? media.filter(m => m.ext === 'gif' && m.animated !== false).length : 0;
   $('chips').innerHTML = Object.keys(counts).sort().map(ext => {
     const sw = `<label class="switch">
        <input type="checkbox" data-ext="${ext}" ${extOff.has(ext) ? '' : 'checked'}>
@@ -860,7 +863,7 @@ $('chips').addEventListener('change', async e => {
 
 async function probeGifs() {
   // only probe gifs that are actually on display right now (respects folder + filters)
-  const pending = visible().filter(m => m.ext === 'gif' && m.animated === undefined);
+  const pending = visible().filter(m => m.ext === 'gif' && m.animated == null);  // undefined OR null (retry undetermined)
   if (!pending.length) return;
   gifProbing = true;
   renderChips();
@@ -870,8 +873,11 @@ async function probeGifs() {
       const m = pending[i++];
       try {
         const r = await fetch('/api/animated?url=' + encodeURIComponent(m.url));
-        m.animated = (await r.json()).animated === true;
-      } catch (e) { m.animated = false; }
+        const a = (await r.json()).animated;
+        // tri-state: true / false / null — only a confirmed-static False hides a gif;
+        // undetermined (rate-limited, truncated, unparseable) stays visible
+        m.animated = a === true ? true : a === false ? false : null;
+      } catch (e) { m.animated = null; }
       if (++since >= 8) { since = 0; invalidateView(); renderVirtual(true); }  // stream results
     }
   }
