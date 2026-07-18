@@ -149,16 +149,18 @@ def scrape():
 
             # ---- single page ----
             count = 0
-            seen_norm = set()
+            seen_norm = {}          # norm -> playback url first emitted
+            appears = {}            # norm -> number of snapshots containing it
             if source in ("live", "both"):
                 yield line({"status": "Fetching page"})
                 html, final_url = fetch_page(url)
                 fresh = []
                 for it in extract_media(html, final_url):
                     n = norm_url(it["url"])
+                    appears[n] = appears.get(n, 0) + 1
                     if n in seen_norm:
                         continue
-                    seen_norm.add(n)
+                    seen_norm[n] = it["url"]
                     if source == "both":
                         it["origin"] = "live"
                     fresh.append(it)
@@ -202,9 +204,10 @@ def scrape():
                 fresh = []
                 for it in extract_media(html, final_url):
                     n = norm_url(it["url"])
+                    appears[n] = appears.get(n, 0) + 1
                     if n in seen_norm:
                         continue
-                    seen_norm.add(n)
+                    seen_norm[n] = it["url"]
                     if source == "both":
                         it["origin"] = "archive"
                     fresh.append(it)
@@ -232,7 +235,7 @@ def scrape():
                             n = norm_url(item["url"])
                             if n in seen_norm:
                                 continue
-                            seen_norm.add(n)
+                            seen_norm[n] = item["url"]
                             if source == "both":
                                 item["origin"] = "archive"
                             fresh.append(item)
@@ -242,6 +245,9 @@ def scrape():
                     swept = True
                 except requests.RequestException as e:
                     yield line({"status": f"Folder index sweep skipped ({e})"})
+            if len(targets) > 1:
+                snaps = {seen_norm[n]: c for n, c in appears.items() if n in seen_norm}
+                yield line({"meta": {"snaps": snaps, "total": len(targets)}})
             extra = " + folder index" if swept else ""
             if source == "both":
                 done_url = f"{url} (live + {len(targets)} archived snapshots{extra})"

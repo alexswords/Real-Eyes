@@ -153,6 +153,7 @@
   .card.row .rext { width: 40px; text-transform: uppercase; font-weight: 700; font-size: 9px; color: #43663a; flex-shrink: 0; }
   .card.row .rsize { width: 62px; text-align: right; color: #4c6244; flex-shrink: 0; font-size: 10px; }
   .card.row .rdate { width: 72px; color: #4c6244; flex-shrink: 0; font-size: 10px; }
+  .card.row .rsnap { width: 46px; text-align: right; flex-shrink: 0; font-size: 10px; font-weight: 700; color: #8a5a2a; }
   /* toggle switches */
   .chips {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
@@ -238,6 +239,11 @@
   .meta { padding: 6px 8px; font-size: 11px; }
   .meta .name { word-break: break-all; color: #33482d; display: block;
                 max-height: 2.4em; overflow: hidden; }
+  .rare-badge {
+    display: inline-block; margin-left: 4px; border: 1px solid #c99; border-radius: 2px;
+    background: linear-gradient(180deg, #fbeaea, #f2d4d4); color: #9a3b3b;
+    padding: 0 5px; font-size: 9px; font-weight: 700;
+  }
   .arch-badge {
     display: inline-block; margin-left: 4px; border: 1px solid #b8a37a; border-radius: 2px;
     background: linear-gradient(180deg, #f7f2e2, #eadfc2); color: #7a6535;
@@ -411,6 +417,7 @@
         <option value="dateDesc">Archive date (newest first)</option>
         <option value="sizeDesc">Size (largest first)</option>
         <option value="sizeAsc">Size (smallest first)</option>
+        <option value="rarity">Rarity (fewest snapshots)</option>
       </select>
     </span>
     <span class="sortwrap">🔎 <input type="text" id="fsearch" placeholder="filter filenames…"></span>
@@ -487,6 +494,7 @@ let picked = new Set(), lastPickIdx = -1;
 let fQ = '', fYFrom = 0, fYTo = 0, fMinKB = 0;
 let agifsOnly = false;
 let gifProbing = false;
+let snapTotal = 0;
 const NEEDS_CONVERT = new Set(['flv', 'wmv', 'avi', 'mpg', 'mpeg', '3gp', 'm2v', 'mts',
                                'rm', 'rmvb', 'asf', 'wma', 'ra', 'amr', 'aif', 'aiff']);
 const convertUrl = m => '/api/transcode?v=2&url=' + encodeURIComponent(m.url);
@@ -604,6 +612,7 @@ $('form').addEventListener('submit', async e => {
   $('stopbtn').style.display = 'block';
   scrapeCtl = new AbortController();
   const got = [];
+  let snapMeta = null;
   try {
     const r = await fetch('/api/scrape', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -638,6 +647,7 @@ $('form').addEventListener('submit', async e => {
         const msg = JSON.parse(raw);
         if (msg.error) throw new Error(msg.error);
         if (msg.items) got.push(...msg.items);
+        if (msg.meta && msg.meta.snaps) { snapMeta = msg.meta; }
         if (msg.status) $('spinner').textContent = msg.status;
         if (msg.progress !== undefined)
           $('spinner').textContent = `Parsing media files — ${msg.progress.toLocaleString()} found`;
@@ -645,11 +655,11 @@ $('form').addEventListener('submit', async e => {
       }
     }
     if (!doneMeta && !got.length) throw new Error('Scrape returned no result');
-    finalizeScrape(got, doneMeta ? doneMeta.url : $('url').value, req);
+    finalizeScrape(got, doneMeta ? doneMeta.url : $('url').value, req, snapMeta);
   } catch (err) {
     if (err.name === 'AbortError' && got.length) {
       // stopped early — show everything gathered so far
-      finalizeScrape(got, $('url').value + ' (stopped early — partial results)', req);
+      finalizeScrape(got, $('url').value + ' (stopped early — partial results)', req, snapMeta);
     } else {
       $('error').textContent = err.name === 'AbortError' ? 'Scraping stopped.' : err.message;
       $('error').style.display = 'block';
@@ -667,7 +677,9 @@ $('form').addEventListener('submit', async e => {
 let scrapeCtl = null;
 $('stopbtn').addEventListener('click', () => { if (scrapeCtl) scrapeCtl.abort(); });
 
-function finalizeScrape(items, srcLabel, req) {
+function finalizeScrape(items, srcLabel, req, snapMeta) {
+  snapTotal = snapMeta ? snapMeta.total : 0;
+  if (snapMeta) items.forEach(m => { m.snaps = snapMeta.snaps[m.url] || 1; });
   if (!items.length) {
     const sc = req.scope;
     $('error').textContent = sc === 'page'
@@ -708,6 +720,7 @@ const sorters = {
   dateDesc: (a, b) => b.ts - a.ts,
   sizeDesc: (a, b) => (b.size || 0) - (a.size || 0),
   sizeAsc:  (a, b) => (a.size || 0) - (b.size || 0),
+  rarity:   (a, b) => (a.snaps || 99) - (b.snaps || 99) || b.ts - a.ts,
 };
 $('sortby').addEventListener('change', render);
 
@@ -841,6 +854,7 @@ $('chips').addEventListener('change', async e => {
   const ext = e.target.dataset.ext;
   if (!ext) return;
   e.target.checked ? extOff.delete(ext) : extOff.add(ext);
+  if (ext === 'gif') renderChips();   // reveal/hide the "animated only" sub-toggle
   render();
 });
 
@@ -999,7 +1013,7 @@ function renderVirtual(force) {
         <span class="rfold">${esc(m.folder)}</span>
         <span class="rext">${esc(m.ext)}</span>${m.origin === 'archive' ? '<span class="arch-badge">archived</span>' : ''}
         <span class="rsize">${fmtSize(m.size)}</span>
-        <span class="rdate">${m.ts ? fmtTs(m.ts) : ''}</span>
+        <span class="rdate">${m.ts ? fmtTs(m.ts) : ''}</span>${snapTotal && m.snaps ? `<span class="rsnap" title="appeared in ${m.snaps} of ${snapTotal} snapshots">${m.snaps}/${snapTotal}</span>` : ''}
       </div>`;
     } else {
       const x = (i % cols) * (cardW + GAP);
@@ -1012,7 +1026,7 @@ function renderVirtual(force) {
         <div class="thumb">${thumb}</div>
         <div class="meta">
           <span class="name" title="${esc(m.url)}">${esc(m.name)}</span>
-          <span class="ext-badge">${esc(m.ext)}</span>${m.origin === 'archive' ? '<span class="arch-badge">archived</span>' : ''}
+          <span class="ext-badge">${esc(m.ext)}</span>${m.origin === 'archive' ? '<span class="arch-badge">archived</span>' : ''}${snapTotal && m.snaps === 1 ? '<span class="rare-badge" title="appeared in only 1 snapshot">rare</span>' : ''}
         </div></div>`;
     }
   }
