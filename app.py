@@ -20,8 +20,8 @@ from flask import (Flask, Response, jsonify, render_template, request,
                    send_file, send_from_directory)
 
 from scraper import (HEADERS, cdx_fetch_pages, cdx_html_pages, crawl_pages,
-                     extract_media, fetch_page, fetch_page_retry, is_animated_gif,
-                     norm_url, page_snapshots, parse_cdx_row, resolve_wayback,
+                     extract_media, fetch_page, fetch_page_retry, norm_url,
+                     page_snapshots, parse_cdx_row, resolve_wayback,
                      wayback_median_snapshot)
 
 app = Flask(__name__)
@@ -177,6 +177,7 @@ def scrape():
                             if n in seen_norm:
                                 continue
                             seen_norm.add(n)
+                            it["deep"] = True    # found only by the deep page read
                             if source == "both":
                                 it["origin"] = "archive"
                             fresh.append(it)
@@ -365,22 +366,6 @@ def download_one():
         r.iter_content(65536),
         mimetype=r.headers.get("Content-Type", "application/octet-stream"),
         headers={"Content-Disposition": 'attachment; filename="%s"' % name})
-
-
-_ANIM_CACHE: dict[str, bool] = {}
-
-
-@app.get("/api/animated")
-def animated():
-    url = request.args.get("url", "")
-    if not url.startswith(("http://", "https://")):
-        return jsonify({"error": "Bad URL"}), 400
-    if url in _ANIM_CACHE:                    # determined once = determined forever
-        return jsonify({"animated": _ANIM_CACHE[url]})
-    res = is_animated_gif(url)
-    if res is not None:                       # never cache "undetermined" — retries may resolve it
-        _ANIM_CACHE[url] = res
-    return jsonify({"animated": res})
 
 
 @app.get("/api/raw")

@@ -13,7 +13,7 @@ macOS app: `bash build_app.sh`.
     (live fetch → snapshot walk → folder-index sweep → rarity `meta.snaps`).
   - `_wayback_variants`/`_fetch_upstream` (~270): retry a file across Wayback
     playback modifiers (`id_`, `im_`, `oe_`).
-  - `/api/download`, `/api/raw` (Flash passthrough), `/api/animated`,
+  - `/api/download`, `/api/raw` (Flash passthrough),
     `/api/transcode` (ffmpeg, 3-pass fallback), `/ruffle/<f>` (Flash emulator).
     ffmpeg + Ruffle are downloaded & cached in `~/Library/Application
     Support/Real-Eyes/` on first use — nothing bundled.
@@ -32,16 +32,13 @@ macOS app: `bash build_app.sh`.
   - `fetch_page_retry`: 429/5xx backoff — ALL archive page reads go through it
     (plain `fetch_page` is for live pages only). Skipping failures silently made
     deep runs nondeterministic; skips are now counted and reported in `done.url`.
-  - `_gif_scan`/`is_animated_gif`: real GIF block-structure parser; tri-state
-    True/False/None — None (undetermined) must never hide a file.
   - `crawl_pages`: BFS over live site, same-host, optional folder prefix.
 - `templates/index.html` (~1400 lines) — entire UI, ONE `<script>` block.
   - ~340–460: markup (form, source/time/scope rows, chip calendars, toolbar,
     chips + folder tree + grid).
   - ~500–570: `updateFlow` progressive reveal; deep checkbox rules + `deeplbl`.
   - ~600–680: submit handler, NDJSON reader.
-  - ~775–900: `visible()` filter chain, folder tree, extension chips,
-    `probeGifs` (4 workers, tri-state `m.animated`).
+  - ~775–870: `visible()` filter chain, folder tree, extension chips.
   - Further down: virtualized grid/list (fine at 100k), selection/shift-click,
     floating viewer (Ruffle/transcode playback), exports, idle ping.
 - `build_app.sh` — builds `Real Eyes.app`; launcher checks `/api/version`,
@@ -55,9 +52,10 @@ macOS app: `bash build_app.sh`.
 - Dedup is by `norm_url`, never raw URL. In "both" mode, archive items matching
   a live norm are dropped; survivors get `origin: "archive"` (UI badge).
 - The archive rate-limits (429) aggressively — every CDX caller must tolerate
-  it, and any per-file probe failure must degrade to "unknown", not "negative".
-  `/api/animated` caches determined results (`_ANIM_CACHE`); the UI probes with
-  2 paced workers + a concurrency guard (more workers 429s and breaks thumbnails).
+  it. Thumbnails retry twice with backoff (`__thumbRetry`) before falling back
+  to a placeholder icon.
+- Deep-found items get `deep: true` from the backend and a red DEEP badge in
+  grid/list/viewer (set only in the site/local deep page-read pass).
 - Deep semantics: page scope = read every capture; site/local = also read the
   site's archived HTML pages (catches media on other domains / CSS-only refs).
 - `time` param: now / range (tfrom+tto, YYYYMMDD) / all; "now" archive side =

@@ -170,10 +170,6 @@
   }
   .chipactions { display: flex; gap: 6px; }
   .chipactions button { padding: 3px 10px; font-size: 11px; }
-  .subsw { grid-column: 1 / -1; margin: 1px 0 3px 24px; padding-left: 8px;
-           border-left: 2px solid #b8cf9c; }
-  .subsw .lbl { font-size: 11px; color: #557a3f; }
-  .subsw.busy .lbl::after { content: " — checking…"; color: #99a68c; }
   .switch { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; font-size: 12px;
             user-select: none; }
   .switch input { display: none; }
@@ -248,6 +244,12 @@
     display: inline-block; margin-left: 4px; border: 1px solid #b8a37a; border-radius: 2px;
     background: linear-gradient(180deg, #f7f2e2, #eadfc2); color: #7a6535;
     padding: 0 5px; font-size: 9px; font-weight: 700;
+  }
+  .deep-badge {
+    display: inline-block; margin-left: 4px; border: 1px solid #a02c2c; border-radius: 2px;
+    background: linear-gradient(180deg, #e05b4e, #c22f2f); color: #fff;
+    padding: 0 5px; font-size: 9px; font-weight: 700; letter-spacing: .5px;
+    text-shadow: 0 1px 1px rgba(0,0,0,.25);
   }
   .ext-badge {
     display: inline-block; border: 1px solid #a3b88e; border-radius: 2px;
@@ -492,8 +494,6 @@ fetch('/api/ping', { method: 'POST' }).catch(() => {});
 let enlargeMult = 1;
 let picked = new Set(), lastPickIdx = -1;
 let fQ = '', fYFrom = 0, fYTo = 0, fMinKB = 0;
-let agifsOnly = false;
-let gifProbing = false;
 let snapTotal = 0;
 const NEEDS_CONVERT = new Set(['flv', 'wmv', 'avi', 'mpg', 'mpeg', '3gp', 'm2v', 'mts',
                                'rm', 'rmvb', 'asf', 'wma', 'ra', 'amr', 'aif', 'aiff']);
@@ -570,6 +570,18 @@ $('calrow').addEventListener('click', e => {
 });
 renderCal('from');
 renderCal('to');
+
+// thumbnails: the archive rate-limits bursts of image loads (429), and a failed
+// load used to become a permanent placeholder. Retry twice with growing delays
+// before giving up — most 429s clear within seconds.
+window.__thumbRetry = function (img) {
+  const n = (+img.dataset.r || 0) + 1;
+  if (n > 2) { img.replaceWith('🖼️'); return; }
+  img.dataset.r = n;
+  const src = img.getAttribute('src');
+  img.removeAttribute('src');
+  setTimeout(() => { if (img.isConnected) img.src = src; }, 3000 * n);
+};
 
 // Wayback playback URL -> original URL for folder structure
 function originalUrl(u) {
@@ -783,8 +795,7 @@ function visible() {
         && (!fQ || m.name.toLowerCase().includes(fQ) || m.url.toLowerCase().includes(fQ))
         && (!fYFrom || !m.ts || m.ts >= fYFrom * 1e10)
         && (!fYTo || !m.ts || m.ts < (fYTo + 1) * 1e10)
-        && (!fMinKB || !m.size || m.size >= fMinKB * 1024)
-        && (!agifsOnly || m.ext !== 'gif' || m.animated !== false))
+        && (!fMinKB || !m.size || m.size >= fMinKB * 1024))
       .sort(sorters[$('sortby').value] || sorters.ext);
   return visCache;
 }
@@ -832,63 +843,19 @@ $('tree').addEventListener('click', e => {
 function renderChips() {
   const counts = {};
   media.filter(inFolder).forEach(m => counts[m.ext] = (counts[m.ext] || 0) + 1);
-  const gifsAll = agifsOnly ? media.filter(m => m.ext === 'gif') : [];
-  const anim = gifsAll.filter(m => m.animated !== false).length;
-  const unk = gifsAll.filter(m => m.animated == null).length;
-  $('chips').innerHTML = Object.keys(counts).sort().map(ext => {
-    const sw = `<label class="switch">
+  $('chips').innerHTML = Object.keys(counts).sort().map(ext => `<label class="switch">
        <input type="checkbox" data-ext="${ext}" ${extOff.has(ext) ? '' : 'checked'}>
        <span class="knob"></span>
        <span class="lbl">${ext} (${counts[ext]})</span>
-     </label>`;
-    if (ext === 'gif' && !extOff.has('gif'))
-      return sw + `<label class="switch subsw ${gifProbing ? 'busy' : ''}" title="Hide static GIFs — probes files on demand">
-         <input type="checkbox" id="agifs" ${agifsOnly ? 'checked' : ''}>
-         <span class="knob"></span><span class="lbl">animated only${agifsOnly && !gifProbing ? ` (${anim}${unk ? `, ${unk} unprobed` : ''})` : ''}</span></label>`;
-    return sw;
-  }).join('');
+     </label>`).join('');
 }
 
-$('chips').addEventListener('change', async e => {
-  if (e.target.id === 'agifs') {
-    agifsOnly = e.target.checked;
-    render();                 // apply filter immediately (hides confirmed-static only)
-    if (agifsOnly) { await probeGifs(); render(); renderChips(); }
-    return;
-  }
+$('chips').addEventListener('change', e => {
   const ext = e.target.dataset.ext;
   if (!ext) return;
   e.target.checked ? extOff.delete(ext) : extOff.add(ext);
-  if (ext === 'gif') renderChips();   // reveal/hide the "animated only" sub-toggle
   render();
 });
-
-async function probeGifs() {
-  if (gifProbing) return;   // one swarm at a time — re-toggling used to stack swarms
-  // only probe gifs that are actually on display right now (respects folder + filters)
-  const pending = visible().filter(m => m.ext === 'gif' && m.animated == null);  // undefined OR null (retry undetermined)
-  if (!pending.length) return;
-  gifProbing = true;
-  renderChips();
-  let i = 0, since = 0;
-  async function worker() {
-    while (i < pending.length && agifsOnly) {   // bail if the toggle flips off
-      const m = pending[i++];
-      try {
-        const r = await fetch('/api/animated?url=' + encodeURIComponent(m.url));
-        const a = (await r.json()).animated;
-        // tri-state: true / false / null — only a confirmed-static False hides a gif;
-        // undetermined (rate-limited, truncated, unparseable) stays visible
-        m.animated = a === true ? true : a === false ? false : null;
-      } catch (e) { m.animated = null; }
-      if (++since >= 8) { since = 0; invalidateView(); renderVirtual(true); }  // stream results
-      await new Promise(res => setTimeout(res, 120));  // stay under the archive's rate limit
-    }
-  }
-  // 2 paced workers — 4 flat-out tripped 429s that also broke thumbnail loading
-  await Promise.all([worker(), worker()]);
-  gifProbing = false;
-}
 
 $('extall').addEventListener('click', () => {
   extOff.clear();
@@ -1014,7 +981,7 @@ function renderVirtual(force) {
     const pk = picked.has(m.url) ? 'on' : '';
     if (list) {
       const rthumb = m.type === 'image'
-        ? `<img src="${esc(m.url)}" loading="lazy" onerror="this.replaceWith('🖼️')">`
+        ? `<img src="${esc(m.url)}" loading="lazy" onerror="__thumbRetry(this)">`
         : `<span class="icon">${m.type === 'video' ? '🎬' : m.type === 'audio' ? '🎵' : '🧩'}</span>`;
       out += `<div class="card row ${sel}" data-url="${esc(m.url)}" data-idx="${i}"
         style="left:0;top:${y}px;width:${w}px;height:${rowH}px">
@@ -1022,14 +989,14 @@ function renderVirtual(force) {
         <span class="rthumb">${rthumb}</span>
         <span class="rname" title="${esc(m.url)}">${esc(m.name)}</span>
         <span class="rfold">${esc(m.folder)}</span>
-        <span class="rext">${esc(m.ext)}</span>${m.origin === 'archive' ? '<span class="arch-badge">archived</span>' : ''}
+        <span class="rext">${esc(m.ext)}</span>${m.origin === 'archive' ? '<span class="arch-badge">archived</span>' : ''}${m.deep ? '<span class="deep-badge" title="found only by the deep page read">DEEP</span>' : ''}
         <span class="rsize">${fmtSize(m.size)}</span>
         <span class="rdate">${m.ts ? fmtTs(m.ts) : ''}</span>${snapTotal && m.snaps ? `<span class="rsnap" title="appeared in ${m.snaps} of ${snapTotal} snapshots">${m.snaps}/${snapTotal}</span>` : ''}
       </div>`;
     } else {
       const x = (i % cols) * (cardW + GAP);
       const thumb = m.type === 'image'
-        ? `<img src="${esc(m.url)}" loading="lazy" onerror="this.replaceWith('🖼️')">`
+        ? `<img src="${esc(m.url)}" loading="lazy" onerror="__thumbRetry(this)">`
         : `<span class="icon">${m.type === 'video' ? '🎬' : m.type === 'audio' ? '🎵' : '🧩'}</span>`;
       out += `<div class="card ${sel}" data-url="${esc(m.url)}" data-idx="${i}"
         style="left:${x.toFixed(1)}px;top:${y}px;width:${cardW.toFixed(1)}px;height:${rowH}px">
@@ -1037,7 +1004,7 @@ function renderVirtual(force) {
         <div class="thumb">${thumb}</div>
         <div class="meta">
           <span class="name" title="${esc(m.url)}">${esc(m.name)}</span>
-          <span class="ext-badge">${esc(m.ext)}</span>${m.origin === 'archive' ? '<span class="arch-badge">archived</span>' : ''}${snapTotal && m.snaps === 1 ? '<span class="rare-badge" title="appeared in only 1 snapshot">rare</span>' : ''}
+          <span class="ext-badge">${esc(m.ext)}</span>${m.origin === 'archive' ? '<span class="arch-badge">archived</span>' : ''}${m.deep ? '<span class="deep-badge" title="found only by the deep page read">DEEP</span>' : ''}${snapTotal && m.snaps === 1 ? '<span class="rare-badge" title="appeared in only 1 snapshot">rare</span>' : ''}
         </div></div>`;
     }
   }
@@ -1157,6 +1124,7 @@ function openViewer(m) {
   $('vnext').disabled = $('vlast').disabled = $('vfwd10').disabled = i >= items.length - 1;
   $('vmeta').innerHTML = `<b>${m.name}</b><br>${m.folder}<br>${m.ext} · ${m.type}` +
     (m.origin === 'archive' ? ' · <b>archive-only</b> — gone from the live site' : '') +
+    (m.deep ? ' · <b>DEEP</b> — found only by reading archived pages' : '') +
     (m.ts ? `<br>archived ${fmtTs(m.ts)}` : '') + (m.size ? `<br>${fmtSize(m.size)}` : '');
   $('vlinks').innerHTML =
     `<a href="${m.url}" target="_blank" rel="noopener">open in new tab</a>` +
