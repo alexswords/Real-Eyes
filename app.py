@@ -178,12 +178,15 @@ def scrape():
                                 break
                             continue
                         pages_read += 1
+                        wb = WB_RE.match(final_url)
+                        page_ts = wb.group(2) if wb else None
                         fresh = []
                         for it in extract_media(html, final_url):
                             n = norm_url(it["url"])
                             if n in seen_norm:
                                 continue
                             seen_norm.add(n)
+                            it["url"] = _archive_playback(it["url"], page_ts, it["type"])
                             it["deep"] = True    # found only by the deep page read
                             if source == "both":
                                 it["origin"] = "archive"
@@ -261,12 +264,15 @@ def scrape():
                 except requests.RequestException:
                     snaps_skipped += 1
                     continue
+                wb = WB_RE.match(final_url)
+                page_ts = wb.group(2) if wb else None
                 fresh = []
                 for it in extract_media(html, final_url):
                     n = norm_url(it["url"])
                     appears[n] = appears.get(n, 0) + 1
                     if n in seen_norm:
                         continue
+                    it["url"] = _archive_playback(it["url"], page_ts, it["type"])
                     seen_norm[n] = it["url"]
                     if source == "both":
                         it["origin"] = "archive"
@@ -333,6 +339,25 @@ ACTIVE_SCRAPES = {"n": 0}
 
 
 WB_RE = re.compile(r"(https?://web\.archive\.org/web/)(\d{4,14})([a-z]{2}_)?/(.*)", re.S)
+
+
+def _archive_playback(url, page_ts, mtype):
+    """Direct playback URL for a media file found inside an archived page.
+
+    Archived HTML references media as modifier-less playback URLs, or even as
+    raw original URLs (og: meta, data-src, srcset — Wayback doesn't rewrite
+    them all). Raw originals point at long-dead hosts, so most deep-found
+    thumbnails never loaded. Pin everything to the page's capture timestamp
+    with the right playback modifier — the archive redirects to its nearest
+    capture of the file."""
+    mod = "im_" if mtype == "image" else "id_"
+    m = WB_RE.match(url)
+    if m:
+        base, ts, cur, rest = m.groups()
+        return url if cur else f"{base}{ts}{mod}/{rest}"
+    if not page_ts:
+        return url
+    return f"https://web.archive.org/web/{page_ts}{mod}/{url}"
 
 
 def _wayback_variants(url):

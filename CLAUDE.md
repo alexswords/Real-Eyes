@@ -65,6 +65,15 @@ macOS app: `bash build_app.sh`.
   load: back off tens of seconds, not single-digit.
 - Deep-found items get `deep: true` from the backend and a red DEEP badge in
   grid/list/viewer (set only in the site/local deep page-read pass).
+- Media extracted from ARCHIVED page reads (deep pass + single-page snapshot
+  walk) get their URL pinned via `_archive_playback` (app.py): raw original
+  URLs (og: meta, data-src — Wayback doesn't rewrite them all) are wrapped to
+  the page capture's timestamp, modifier-less playback URLs get `im_`/`id_`.
+  Without this, most deep thumbnails pointed at long-dead hosts and never
+  loaded.
+- Toolbar has a "Tag" dropdown (`m.tag`, from backend `source_tag`): the HTML
+  tag a file was referenced by, or `index` for CDX-index finds (their
+  source_tag is a mimetype). Replaced the old year from/to filter.
 - Deep semantics: page scope = read every capture; site/local = also read the
   site's archived HTML pages (catches media on other domains / CSS-only refs).
 - `time` param: now / range (tfrom+tto, YYYYMMDD) / all; "now" archive side =

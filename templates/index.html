@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Real Eyes</title>
+<link rel="icon" id="favicon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='15'%3E%F0%9F%92%BF%3C/text%3E%3C/svg%3E">
 <style>
   :root { color-scheme: light; }
   * { box-sizing: border-box; margin: 0; }
@@ -48,8 +49,6 @@
     75% { content: "\\"; }
   }
   .tb-right { display: flex; align-items: center; gap: 10px; }
-  #tbart { height: 46px; width: auto; display: block; border-radius: 3px;
-           border: 1px solid rgba(255,255,255,.55); box-shadow: 0 1px 4px rgba(8,20,6,.35); }
   .body-inner { padding: 16px; }
   h1 { display: none; }
   p.sub { color: #4c6244; margin-bottom: 12px; font-size: 12px; }
@@ -83,10 +82,6 @@
   .gocol button { width: 100%; }
   #deeprow { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #4c6244; white-space: nowrap; }
   #url { flex: 1; }
-  .wb-row { display: flex; gap: 16px; align-items: center; margin-bottom: 8px; font-size: 12px;
-            color: #3e523a; flex-wrap: wrap; }
-  .wb-row input[type=text] { width: 290px; font-size: 12px; }
-  .wb-row .hint { color: #7d9370; font-size: 11px; }
   .selrow { display: none; grid-template-columns: 58px repeat(3, 128px); align-items: center;
             gap: 3px 6px; margin-bottom: 5px; font-size: 12px; color: #3e523a; }
   .selrow label { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
@@ -104,7 +99,6 @@
   .daychip:hover { border-color: #6d8f5a; background: #eef7e6; }
   .daychip.sel { background: linear-gradient(180deg, #6f9e55, #557a3f); color: #fff;
                  border-color: #44622f; font-weight: 700; }
-  .wb-row input[type=text]:disabled { background: #eef2f5; }
   #source { word-break: break-all; }
   .error {
     background: linear-gradient(180deg, #fff3f1, #fbe3df); color: #a02b1a;
@@ -131,7 +125,6 @@
   .toolbar .count { font-size: 12px; color: #4c6244; }
   .sortwrap { display: flex; align-items: center; gap: 6px; font-size: 12px; }
   #fsearch { width: 150px; }
-  .yr { width: 52px; }
   .seg { padding: 4px 10px; font-size: 13px; }
   .seg.on { background: linear-gradient(180deg, #cce3b7, #b6d79e); border-color: #557a3f; }
   .pick {
@@ -257,7 +250,6 @@
     padding: 0 5px; font-size: 9px; font-weight: 700; text-transform: uppercase; margin-top: 4px;
   }
   /* viewer — floating, always-on-top, resizable window */
-  #viewercol { display: contents; }
   #viewer {
     position: fixed; top: 64px; right: 22px; width: 370px; height: 540px;
     min-width: 380px; min-height: 340px; max-width: 92vw; max-height: 92vh;
@@ -423,7 +415,11 @@
       </select>
     </span>
     <span class="sortwrap">🔎 <input type="text" id="fsearch" placeholder="filter filenames…"></span>
-    <span class="sortwrap">Year <input type="text" id="fyfrom" class="yr" placeholder="from"> – <input type="text" id="fyto" class="yr" placeholder="to"></span>
+    <span class="sortwrap">Tag
+      <select id="ftag" title="Where the file was referenced — the HTML tag it came from, or the archive's index">
+        <option value="">all</option>
+      </select>
+    </span>
     <span class="sortwrap">Min size
       <select id="fsize">
         <option value="0">any</option>
@@ -493,7 +489,7 @@ setInterval(() => fetch('/api/ping', { method: 'POST' }).catch(() => {}), 20000)
 fetch('/api/ping', { method: 'POST' }).catch(() => {});
 let enlargeMult = 1;
 let picked = new Set(), lastPickIdx = -1;
-let fQ = '', fYFrom = 0, fYTo = 0, fMinKB = 0;
+let fQ = '', fTag = '', fMinKB = 0;
 let snapTotal = 0;
 const NEEDS_CONVERT = new Set(['flv', 'wmv', 'avi', 'mpg', 'mpeg', '3gp', 'm2v', 'mts',
                                'rm', 'rmvb', 'asf', 'wma', 'ra', 'amr', 'aif', 'aiff']);
@@ -505,6 +501,27 @@ let folderSel = '';            // selected folder path prefix ('' = all)
 let extOff = new Set();        // extensions toggled off
 let selectedUrl = null;
 const $ = id => document.getElementById(id);
+// Favicon: the disc at rest, an animated spinner while scraping.
+const DISC_ICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='15'%3E%F0%9F%92%BF%3C/text%3E%3C/svg%3E";
+const _spinGlyphs = ['|', '/', '—', '\\'];
+let _spinTimer = null, _spinI = 0;
+function _spinIcon(g) {
+  return "data:image/svg+xml," + encodeURIComponent(
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'>" +
+    "<text x='8' y='13' font-size='15' font-family='monospace' font-weight='700' " +
+    "text-anchor='middle' fill='%23557a3f'>" + g + "</text></svg>");
+}
+function startFaviconSpin() {
+  if (_spinTimer) return;
+  _spinI = 0;
+  const tick = () => { $('favicon').href = _spinIcon(_spinGlyphs[_spinI++ % 4]); };
+  tick();
+  _spinTimer = setInterval(tick, 250);
+}
+function stopFaviconSpin() {
+  if (_spinTimer) { clearInterval(_spinTimer); _spinTimer = null; }
+  $('favicon').href = DISC_ICON;
+}
 const srcSel = () => document.querySelector('input[name=src]:checked')?.value || '';
 const scopeSel = () => document.querySelector('input[name=scope]:checked')?.value || '';
 
@@ -608,6 +625,10 @@ function enrich(items) {
     const ts = m.url.match(/web\.archive\.org\/web\/(\d{4,14})/);
     m.ts = ts ? parseInt(ts[1].padEnd(14, '0'), 10)
               : parseInt(new Date().toISOString().slice(0,19).replace(/\\D/g,''), 10); // live = now
+    // where the file was referenced: an HTML tag, or the archive's CDX index
+    // (CDX items carry a mimetype in source_tag rather than a tag name)
+    m.tag = (!m.source_tag || m.source_tag === 'cdx' || m.source_tag.includes('/'))
+          ? 'index' : m.source_tag;
   }
 }
 
@@ -621,6 +642,7 @@ $('form').addEventListener('submit', async e => {
   $('grid').innerHTML = '';
   $('spinner').style.display = 'block';
   $('busy').style.display = 'block';
+  startFaviconSpin();
   $('go').style.display = 'none';
   document.querySelectorAll('#srcrow input, #timerow input, #scoperow input').forEach(i => i.disabled = true);
   $('spinner').textContent = 'Scraping';
@@ -691,6 +713,7 @@ $('form').addEventListener('submit', async e => {
   } finally {
     $('spinner').style.display = 'none';
     $('busy').style.display = 'none';
+    stopFaviconSpin();
     $('stopbtn').style.display = 'none';
     $('go').style.display = '';
     document.querySelectorAll('#srcrow input, #timerow input, #scoperow input').forEach(i => i.disabled = false);
@@ -735,7 +758,16 @@ function finalizeScrape(items, srcLabel, req, snapMeta) {
   $('source').style.display = 'block';
   buildTree();
   renderChips();
+  renderTagOptions();
   render();
+}
+
+function renderTagOptions() {
+  const counts = {};
+  media.forEach(m => counts[m.tag] = (counts[m.tag] || 0) + 1);
+  $('ftag').innerHTML = '<option value="">all</option>' + Object.keys(counts).sort()
+    .map(t => `<option value="${t}">${t} (${counts[t]})</option>`).join('');
+  fTag = '';
 }
 
 /* ---------- sorting ---------- */
@@ -758,9 +790,7 @@ $('fsearch').addEventListener('input', () => {
   clearTimeout(searchT);
   searchT = setTimeout(() => { fQ = $('fsearch').value.trim().toLowerCase(); render(); }, 150);
 });
-function yearVal(id) { const v = parseInt($(id).value, 10); return (v >= 1990 && v <= 2100) ? v : 0; }
-$('fyfrom').addEventListener('change', () => { fYFrom = yearVal('fyfrom'); render(); });
-$('fyto').addEventListener('change', () => { fYTo = yearVal('fyto'); render(); });
+$('ftag').addEventListener('change', () => { fTag = $('ftag').value; render(); });
 $('fsize').addEventListener('change', () => { fMinKB = parseInt($('fsize').value, 10) || 0; render(); });
 
 function setView(v) {
@@ -807,8 +837,7 @@ function visible() {
   if (!visCache)
     visCache = media.filter(m => inFolder(m) && !extOff.has(m.ext)
         && (!fQ || m.name.toLowerCase().includes(fQ) || m.url.toLowerCase().includes(fQ))
-        && (!fYFrom || !m.ts || m.ts >= fYFrom * 1e10)
-        && (!fYTo || !m.ts || m.ts < (fYTo + 1) * 1e10)
+        && (!fTag || m.tag === fTag)
         && (!fMinKB || !m.size || m.size >= fMinKB * 1024))
       .sort(sorters[$('sortby').value] || sorters.ext);
   return visCache;
