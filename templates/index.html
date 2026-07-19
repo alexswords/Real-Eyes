@@ -672,11 +672,20 @@ $('form').addEventListener('submit', async e => {
     if (!doneMeta && !got.length) throw new Error('Scrape returned no result');
     finalizeScrape(got, doneMeta ? doneMeta.url : $('url').value, req, snapMeta);
   } catch (err) {
-    if (err.name === 'AbortError' && got.length) {
-      // stopped early — show everything gathered so far
-      finalizeScrape(got, $('url').value + ' (stopped early — partial results)', req, snapMeta);
+    const stopped = err.name === 'AbortError';
+    if (got.length) {
+      // NEVER discard gathered files — deep scans represent a lot of work.
+      // Show everything collected before the stop/failure.
+      finalizeScrape(got, $('url').value +
+        (stopped ? ' (stopped early — partial results)' : ' (interrupted — partial results)'),
+        req, snapMeta);
+      if (!stopped) {
+        $('error').textContent = err.message + ' — showing the ' +
+          got.length.toLocaleString() + ' files gathered before the failure.';
+        $('error').style.display = 'block';
+      }
     } else {
-      $('error').textContent = err.name === 'AbortError' ? 'Scraping stopped.' : err.message;
+      $('error').textContent = stopped ? 'Scraping stopped.' : err.message;
       $('error').style.display = 'block';
     }
   } finally {
@@ -691,6 +700,11 @@ $('form').addEventListener('submit', async e => {
 
 let scrapeCtl = null;
 $('stopbtn').addEventListener('click', () => { if (scrapeCtl) scrapeCtl.abort(); });
+
+// closing/reloading the tab during a scrape silently kills it — make it a choice
+window.addEventListener('beforeunload', e => {
+  if (scrapeCtl) { e.preventDefault(); e.returnValue = ''; }
+});
 
 function finalizeScrape(items, srcLabel, req, snapMeta) {
   snapTotal = snapMeta ? snapMeta.total : 0;

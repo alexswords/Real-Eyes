@@ -93,6 +93,7 @@ def scrape():
 
     def generate():
         live_norms = set()
+        ACTIVE_SCRAPES["n"] += 1
         try:
             if scope in ("site", "local"):
                 cdx_scope = "path" if scope == "local" else "domain"
@@ -119,25 +120,31 @@ def scrape():
                                              "count": count}})
                         return
                 yield line({"status": "Querying the Wayback Machine index"})
-                batch, seen_cdx = [], set()
-                for kind, payload in cdx_fetch_pages(url, scope=cdx_scope,
-                                                     ts_from=cdx_from, ts_to=cdx_to):
-                    if kind == "status":
-                        yield line({"status": payload})
-                        continue
-                    for row in payload:
-                        item = parse_cdx_row(row, seen_cdx)
-                        if not item:
+                batch, seen_cdx, index_err = [], set(), None
+                try:
+                    for kind, payload in cdx_fetch_pages(url, scope=cdx_scope,
+                                                         ts_from=cdx_from, ts_to=cdx_to):
+                        if kind == "status":
+                            yield line({"status": payload})
                             continue
-                        if source == "both":
-                            if norm_url(item["url"]) in live_norms:
-                                continue          # still present on the live site
-                            item["origin"] = "archive"
-                        batch.append(item)
-                        if len(batch) >= 250:
-                            count += len(batch)
-                            yield line({"items": batch, "progress": count})
-                            batch = []
+                        for row in payload:
+                            item = parse_cdx_row(row, seen_cdx)
+                            if not item:
+                                continue
+                            if source == "both":
+                                if norm_url(item["url"]) in live_norms:
+                                    continue      # still present on the live site
+                                item["origin"] = "archive"
+                            batch.append(item)
+                            if len(batch) >= 250:
+                                count += len(batch)
+                                yield line({"items": batch, "progress": count})
+                                batch = []
+                except requests.RequestException as e:
+                    # keep whatever the sweep already produced and carry on —
+                    # a dead index must not cost the deep pass or the results
+                    index_err = str(e)
+                    yield line({"status": f"Index sweep incomplete ({index_err})"})
                 if batch:
                     count += len(batch)
                     yield line({"items": batch, "progress": count})
@@ -192,6 +199,8 @@ def scrape():
                     hist += f" + {pages_read} page reads"
                     if pages_skipped:
                         hist += f" ({pages_skipped} unreachable — rerun to fill gaps)"
+                if index_err:
+                    hist += " — index sweep incomplete, rerun to fill gaps"
                 suffix = ("live + " + hist) if source == "both" else hist
                 yield line({"done": {"url": f"{url} ({label}, {suffix})", "count": count}})
                 return
@@ -314,8 +323,13 @@ def scrape():
             yield line({"error": f"Request failed: {e}"})
         except Exception as e:  # keep the stream well-formed on any failure
             yield line({"error": str(e)})
+        finally:                # runs on GeneratorExit too (client vanished)
+            ACTIVE_SCRAPES["n"] -= 1
 
     return Response(generate(), mimetype="application/x-ndjson")
+
+
+ACTIVE_SCRAPES = {"n": 0}
 
 
 WB_RE = re.compile(r"(https?://web\.archive\.org/web/)(\d{4,14})([a-z]{2}_)?/(.*)", re.S)
@@ -546,9 +560,14 @@ def ping():
 
 
 def _watchdog():
-    """Exit when no browser tab has pinged for 3 minutes (unless a zip is running)."""
+    """Exit when no browser tab has pinged for 3 minutes — but never while a
+    scrape or zip job is running: killing an hours-long deep scan is worse
+    than an idle server."""
     while True:
         time.sleep(15)
+        if ACTIVE_SCRAPES["n"] > 0:
+            LAST_SEEN["t"] = time.time()     # a running scrape counts as activity
+            continue
         if any(j.get("status") == "running" for j in ZIP_JOBS.values()):
             continue
         if time.time() - LAST_SEEN["t"] > 180:

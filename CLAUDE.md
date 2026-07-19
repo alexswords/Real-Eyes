@@ -18,7 +18,12 @@ macOS app: `bash build_app.sh`.
     ffmpeg + Ruffle are downloaded & cached in `~/Library/Application
     Support/Real-Eyes/` on first use — nothing bundled.
   - Zip export: `_zip_worker` + `/api/zip_start|status|cancel|file` (~540+).
-  - Watchdog: exits after 3 min without `/api/ping` (unless a zip job runs).
+  - Watchdog: exits after 3 min without `/api/ping` — but never while a scrape
+    (`ACTIVE_SCRAPES`) or zip job runs.
+  - Progress is sacred: the frontend salvages streamed items on ANY error
+    (partial results + error banner), the CDX sweep failing mid-run is
+    non-fatal (deep pass still runs, done line notes the gap), and
+    `beforeunload` warns while a scrape is active.
 - `scraper.py` (~470 lines) — no Flask imports; pure scraping helpers.
   - `classify` (ext→type), `extract_media` (BeautifulSoup DOM walk: img/srcset,
     video/audio/source, a[href], og/twitter meta, inline-style url()).
