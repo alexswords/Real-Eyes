@@ -54,6 +54,10 @@ macOS app: `bash build_app.sh`.
 - The archive rate-limits (429) aggressively — every CDX caller must tolerate
   it. Thumbnails retry twice with backoff (`__thumbRetry`) before falling back
   to a placeholder icon.
+- ALL Python HTTP goes through `scraper.SESSION` (shared keep-alive pool) —
+  per-request connections got the whole IP refused ([Errno 61]) during deep
+  scans. Never call bare `requests.get`. ConnectionError = archive shedding
+  load: back off tens of seconds, not single-digit.
 - Deep-found items get `deep: true` from the backend and a red DEEP badge in
   grid/list/viewer (set only in the site/local deep page-read pass).
 - Deep semantics: page scope = read every capture; site/local = also read the

@@ -19,7 +19,7 @@ import requests
 from flask import (Flask, Response, jsonify, render_template, request,
                    send_file, send_from_directory)
 
-from scraper import (HEADERS, cdx_fetch_pages, cdx_html_pages, crawl_pages,
+from scraper import (HEADERS, SESSION, cdx_fetch_pages, cdx_html_pages, crawl_pages,
                      extract_media, fetch_page, fetch_page_retry, norm_url,
                      page_snapshots, parse_cdx_row, resolve_wayback,
                      wayback_median_snapshot)
@@ -341,7 +341,7 @@ def _fetch_upstream(url, timeout=30):
     last = None
     for u in _wayback_variants(url):
         try:
-            r = requests.get(u, headers=HEADERS, timeout=timeout, stream=True)
+            r = SESSION.get(u, headers=HEADERS, timeout=timeout, stream=True)
             if r.status_code == 200:
                 return r
             last = f"HTTP {r.status_code}"
@@ -400,7 +400,7 @@ def _ensure_ffmpeg():
         url = ("https://github.com/eugeneware/ffmpeg-static/releases/latest/"
                f"download/ffmpeg-darwin-{arch}")
         try:
-            r = requests.get(url, headers=HEADERS, timeout=600)
+            r = SESSION.get(url, headers=HEADERS, timeout=600)
             r.raise_for_status()
             os.makedirs(os.path.dirname(FFMPEG_BIN), exist_ok=True)
             tmp = FFMPEG_BIN + ".part"
@@ -505,7 +505,7 @@ def _ensure_ruffle():
         if os.path.exists(os.path.join(RUFFLE_DIR, "ruffle.js")):
             return True
         try:
-            rel = requests.get(
+            rel = SESSION.get(
                 "https://api.github.com/repos/ruffle-rs/ruffle/releases?per_page=5",
                 headers=HEADERS, timeout=30)
             rel.raise_for_status()
@@ -519,7 +519,7 @@ def _ensure_ruffle():
                     break
             if not asset_url:
                 return False
-            data = requests.get(asset_url, headers=HEADERS, timeout=180)
+            data = SESSION.get(asset_url, headers=HEADERS, timeout=180)
             data.raise_for_status()
             os.makedirs(RUFFLE_DIR, exist_ok=True)
             with zipfile.ZipFile(io.BytesIO(data.content)) as zf:
@@ -572,7 +572,7 @@ def _zip_worker(job_id, urls):
                 content = None
                 for attempt in range(3):
                     try:
-                        r = requests.get(u, headers=HEADERS, timeout=20)
+                        r = SESSION.get(u, headers=HEADERS, timeout=20)
                         if r.status_code in (429, 503):   # throttled — back off, retry
                             time.sleep(2 * (attempt + 1))
                             continue

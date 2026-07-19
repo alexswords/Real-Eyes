@@ -19,6 +19,15 @@ OTHER_EXTS = {".swf"}
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; Real-Eyes/1.0)"}
 
+# One shared keep-alive session for EVERYTHING. Opening a fresh TCP+TLS
+# connection per request made the archive refuse connections outright
+# ([Errno 61]) during deep scans; connection reuse keeps us under that bar.
+SESSION = requests.Session()
+SESSION.headers.update(HEADERS)
+_adapter = requests.adapters.HTTPAdapter(pool_connections=4, pool_maxsize=8)
+SESSION.mount("https://", _adapter)
+SESSION.mount("http://", _adapter)
+
 
 def classify(url: str) -> str | None:
     path = urlparse(url).path
@@ -48,7 +57,7 @@ def resolve_wayback(url: str, date: str | None = None) -> str | None:
     params = {"url": url}
     if date:
         params["timestamp"] = date.replace("-", "")
-    r = requests.get("https://archive.org/wayback/available", params=params,
+    r = SESSION.get("https://archive.org/wayback/available", params=params,
                      headers=HEADERS, timeout=20)
     r.raise_for_status()
     snap = r.json().get("archived_snapshots", {}).get("closest")
@@ -66,7 +75,7 @@ def wayback_median_snapshot(url: str, ts_from: str | None = None,
         params["from"] = ts_from
     if ts_to:
         params["to"] = ts_to
-    r = requests.get("https://web.archive.org/cdx/search/cdx", params=params,
+    r = SESSION.get("https://web.archive.org/cdx/search/cdx", params=params,
                      headers=HEADERS, timeout=30)
     r.raise_for_status()
     rows = r.json() if r.text.strip() else []
@@ -88,7 +97,7 @@ def page_snapshots(url: str, ts_from: str | None = None, ts_to: str | None = Non
         params["from"] = ts_from
     if ts_to:
         params["to"] = ts_to
-    r = requests.get("https://web.archive.org/cdx/search/cdx", params=params,
+    r = SESSION.get("https://web.archive.org/cdx/search/cdx", params=params,
                      headers=HEADERS, timeout=60)
     r.raise_for_status()
     rows = r.json() if r.text.strip() else []
@@ -155,7 +164,7 @@ def crawl_pages(start_url: str, scope: str = "domain", max_pages: int = 120):
     while queue and pages < max_pages:
         u = queue.popleft()
         try:
-            r = requests.get(u, headers=HEADERS, timeout=15)
+            r = SESSION.get(u, headers=HEADERS, timeout=15)
         except requests.RequestException:
             continue
         if "html" not in r.headers.get("Content-Type", ""):
@@ -199,7 +208,7 @@ def cdx_fetch_rows(url: str, limit: int = 20000) -> list:
         "collapse": "urlkey",
         "limit": str(limit),
     }
-    r = requests.get("https://web.archive.org/cdx/search/cdx", params=params,
+    r = SESSION.get("https://web.archive.org/cdx/search/cdx", params=params,
                      headers=HEADERS, timeout=90)
     r.raise_for_status()
     return r.json() if r.text.strip() else []
@@ -257,7 +266,7 @@ def cdx_fetch_pages(url: str, total_limit: int = 100000, page_size: int = 10000,
         r, last_err = None, None
         for attempt in range(5):
             try:
-                r = requests.get("https://web.archive.org/cdx/search/cdx", params=params,
+                r = SESSION.get("https://web.archive.org/cdx/search/cdx", params=params,
                                  headers=HEADERS, timeout=120)
                 if r.status_code == 429:
                     wait = min(int(r.headers.get("Retry-After") or 0) or 15 * (attempt + 1), 90)
@@ -278,6 +287,15 @@ def cdx_fetch_pages(url: str, total_limit: int = 100000, page_size: int = 10000,
                     continue
                 r.raise_for_status()
                 break
+            except requests.ConnectionError as e:
+                # refused/reset connections mean the archive is shedding load from
+                # this IP — cool off much longer than for an ordinary error
+                last_err = str(e)
+                r = None
+                wait = min(20 * (attempt + 1), 90)
+                yield ("status", f"Archive refused the connection — cooling down {wait}s "
+                                 f"(attempt {attempt + 1}/5)")
+                time.sleep(wait)
             except requests.RequestException as e:
                 last_err = str(e)
                 r = None
@@ -288,6 +306,11 @@ def cdx_fetch_pages(url: str, total_limit: int = 100000, page_size: int = 10000,
                     "The archive is rate-limiting this connection (HTTP 429). It clears on its "
                     "own — wait a couple of minutes before scraping again. Repeated large scans "
                     "trip it fastest; prefer Site folder scope or a narrow time range.")
+            if "refused" in (last_err or "").lower() or "reset" in (last_err or "").lower():
+                raise requests.RequestException(
+                    "The archive is refusing connections from this machine — it does this "
+                    "after heavy scraping sessions. Wait 5–10 minutes and try again; it "
+                    "clears on its own. Smaller scopes and date ranges keep you under it.")
             raise requests.RequestException(
                 f"The archive's index timed out for this domain ({last_err}). "
                 "Domains this large may not be fully scannable — try Site folder scope "
@@ -310,6 +333,7 @@ def cdx_fetch_pages(url: str, total_limit: int = 100000, page_size: int = 10000,
         yield ("rows", rows)
         if not resume:
             return
+        time.sleep(0.5)                  # pace resumeKey pages — bursts get us blocked
 
 
 def cdx_html_pages(url: str, scope: str = "domain", ts_from: str | None = None,
@@ -339,7 +363,7 @@ def cdx_html_pages(url: str, scope: str = "domain", ts_from: str | None = None,
     rows, last = None, None
     for attempt in range(3):                 # the index itself rate-limits too
         try:
-            r = requests.get("https://web.archive.org/cdx/search/cdx", params=params,
+            r = SESSION.get("https://web.archive.org/cdx/search/cdx", params=params,
                              headers=HEADERS, timeout=120)
             if r.status_code == 429:
                 last = "HTTP 429"
@@ -453,7 +477,7 @@ def extract_media(html: str, base_url: str) -> list[dict]:
 
 def fetch_page(url: str) -> tuple[str, str]:
     """Fetch a page; returns (html, final_url after redirects)."""
-    resp = requests.get(url, headers=HEADERS, timeout=20)
+    resp = SESSION.get(url, headers=HEADERS, timeout=20)
     resp.raise_for_status()
     return resp.text, resp.url
 
@@ -465,7 +489,7 @@ def fetch_page_retry(url: str, attempts: int = 3) -> tuple[str, str]:
     last = None
     for a in range(attempts):
         try:
-            r = requests.get(url, headers=HEADERS, timeout=20)
+            r = SESSION.get(url, headers=HEADERS, timeout=20)
             if r.status_code == 429:
                 last = "HTTP 429"
                 time.sleep(min(int(r.headers.get("Retry-After") or 0) or 8 * (a + 1), 45))
@@ -476,6 +500,10 @@ def fetch_page_retry(url: str, attempts: int = 3) -> tuple[str, str]:
                 continue
             r.raise_for_status()
             return r.text, r.url
+        except requests.ConnectionError as e:
+            last = str(e)                    # refused/reset — cool off longer
+            if a < attempts - 1:
+                time.sleep(12 * (a + 1))
         except requests.RequestException as e:
             last = str(e)
             if a < attempts - 1:
